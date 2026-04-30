@@ -14089,6 +14089,8 @@ pub struct MuscleCli {
     #[arg(long)]
     pub label: Option<String>,
     #[arg(long)]
+    pub label1: Option<String>,
+    #[arg(long)]
     pub label2: Option<String>,
     #[arg(long)]
     pub labels2: Option<String>,
@@ -15798,7 +15800,7 @@ pub fn main() {
     } else if let Some(input_file_name) = &cli.divide_tree {
         let (_subtree, _supertree) = cmd_divide_tree(
             input_file_name,
-            cli.label.as_deref().unwrap_or(""),
+            cli.label1.as_deref().unwrap_or(""),
             cli.label2.as_deref().unwrap_or(""),
             cli.subtreeout.as_deref().unwrap_or(""),
             cli.supertreeout.as_deref().unwrap_or(""),

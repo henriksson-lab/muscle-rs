@@ -969,6 +969,8 @@ fn path_and_string_helpers_match_cpp_behavior() {
         "conf.html",
         "--jalview",
         "conf.features",
+        "--label1",
+        "A",
         "--label2",
         "B",
         "--labels2",
@@ -1058,6 +1060,7 @@ fn path_and_string_helpers_match_cpp_behavior() {
     assert_eq!(cli_opts.nodes.as_deref(), Some("nodes.tsv"));
     assert_eq!(cli_opts.html.as_deref(), Some("conf.html"));
     assert_eq!(cli_opts.jalview.as_deref(), Some("conf.features"));
+    assert_eq!(cli_opts.label1.as_deref(), Some("A"));
     assert_eq!(cli_opts.label2.as_deref(), Some("B"));
     assert_eq!(cli_opts.labels2.as_deref(), Some("labels.tsv"));
     assert_eq!(cli_opts.subtreeout.as_deref(), Some("sub.nwk"));
@@ -3224,6 +3227,148 @@ fn original_cpp_binary_matches_rust_on_stable_real_data_commands() {
     assert_eq!(
         std::fs::read_to_string(&rust_cmp_msa).unwrap(),
         std::fs::read_to_string(&cpp_cmp_msa).unwrap()
+    );
+
+    let labels_file = root.join("labels.txt");
+    let cpp_random_chain = root.join("cpp.random_chain.nwk");
+    let rust_random_chain = root.join("rust.random_chain.nwk");
+    std::fs::write(&labels_file, b"A\nB\nC\nD\n").unwrap();
+    let random_chain_cpp = std::process::Command::new(&cpp_bin)
+        .args([
+            "-labels2randomchaintree",
+            labels_file.to_str().unwrap(),
+            "-output",
+            cpp_random_chain.to_str().unwrap(),
+            "-quiet",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        random_chain_cpp.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&random_chain_cpp.stdout),
+        String::from_utf8_lossy(&random_chain_cpp.stderr)
+    );
+    reset_rand(1);
+    let random_chain = cmd_labels2randomchaintree(
+        labels_file.to_str().unwrap(),
+        rust_random_chain.to_str().unwrap(),
+    );
+    assert_eq!(random_chain.node_count, 7);
+    assert_eq!(
+        std::fs::read_to_string(&rust_random_chain).unwrap(),
+        std::fs::read_to_string(&cpp_random_chain).unwrap()
+    );
+
+    let tree_labels = vec![
+        "".to_string(),
+        "".to_string(),
+        "leaf-b".to_string(),
+        "leaf-c".to_string(),
+        "leaf-d".to_string(),
+    ];
+    let tree_parents = vec![uint::MAX, 0, 0, 1, 1];
+    let tree_lengths = vec![0.0, 1.1, 1.2, 1.3, 1.4];
+    let mut tree_input = Tree::default();
+    tree_from_vectors(&mut tree_input, &tree_labels, &tree_parents, &tree_lengths);
+    let tree_file = root.join("tree.nwk");
+    tree_to_file_l13(&tree_input, tree_file.to_str().unwrap());
+
+    let subset_nodes = root.join("subset_nodes.tsv");
+    let cpp_subset_tree = root.join("cpp.subset.nwk");
+    let rust_subset_tree = root.join("rust.subset.nwk");
+    std::fs::write(&subset_nodes, b"0\tB2\n1\tC2\n2\tD2\n").unwrap();
+    let subset_cpp = std::process::Command::new(&cpp_bin)
+        .args([
+            "-tree_subset_nodes",
+            tree_file.to_str().unwrap(),
+            "-nodes",
+            subset_nodes.to_str().unwrap(),
+            "-output",
+            cpp_subset_tree.to_str().unwrap(),
+            "-quiet",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        subset_cpp.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&subset_cpp.stdout),
+        String::from_utf8_lossy(&subset_cpp.stderr)
+    );
+    cmd_tree_subset_nodes(
+        tree_file.to_str().unwrap(),
+        subset_nodes.to_str().unwrap(),
+        rust_subset_tree.to_str().unwrap(),
+        false,
+    );
+    assert_eq!(
+        std::fs::read_to_string(&rust_subset_tree).unwrap(),
+        std::fs::read_to_string(&cpp_subset_tree).unwrap()
+    );
+
+    let divide_labels = vec![
+        "".to_string(),
+        "".to_string(),
+        "".to_string(),
+        "A".to_string(),
+        "B".to_string(),
+        "C".to_string(),
+        "D".to_string(),
+    ];
+    let divide_parents = vec![uint::MAX, 0, 0, 1, 1, 2, 2];
+    let divide_lengths = vec![0.0; 7];
+    let mut divide_input = Tree::default();
+    tree_from_vectors(
+        &mut divide_input,
+        &divide_labels,
+        &divide_parents,
+        &divide_lengths,
+    );
+    let divide_tree_file = root.join("divide_tree.nwk");
+    let cpp_subtree = root.join("cpp.subtree.nwk");
+    let cpp_supertree = root.join("cpp.supertree.nwk");
+    let rust_subtree = root.join("rust.subtree.nwk");
+    let rust_supertree = root.join("rust.supertree.nwk");
+    tree_to_file_l13(&divide_input, divide_tree_file.to_str().unwrap());
+    let divide_cpp = std::process::Command::new(&cpp_bin)
+        .args([
+            "-divide_tree",
+            divide_tree_file.to_str().unwrap(),
+            "-label1",
+            "C",
+            "-label2",
+            "D",
+            "-subtreeout",
+            cpp_subtree.to_str().unwrap(),
+            "-supertreeout",
+            cpp_supertree.to_str().unwrap(),
+            "-quiet",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        divide_cpp.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&divide_cpp.stdout),
+        String::from_utf8_lossy(&divide_cpp.stderr)
+    );
+    let (subtree, supertree) = cmd_divide_tree(
+        divide_tree_file.to_str().unwrap(),
+        "C",
+        "D",
+        rust_subtree.to_str().unwrap(),
+        rust_supertree.to_str().unwrap(),
+    );
+    assert!(subtree.node_count > 0);
+    assert!(supertree.node_count > 0);
+    assert_eq!(
+        std::fs::read_to_string(&rust_subtree).unwrap(),
+        std::fs::read_to_string(&cpp_subtree).unwrap()
+    );
+    assert_eq!(
+        std::fs::read_to_string(&rust_supertree).unwrap(),
+        std::fs::read_to_string(&cpp_supertree).unwrap()
     );
 
     let cpp_a2m = root.join("cpp.a2m");
