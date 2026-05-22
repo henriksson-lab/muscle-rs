@@ -1,6 +1,9 @@
 # muscle-rs
 
-`muscle-rs` is a Rust translation of the MUSCLE C++ codebase at https://github.com/rcedgar/muscle
+*This crate is called muscle on crate.io due to a clumpsy initial upload. Unfortunately crate.io does not allow old creates to be completely removed. To avoid polluting the namespace further,
+the crate name has been kept, and this author has learned to check 5 times before upload (and then one more time). Apologizes for any confusion!*
+
+A Rust implementation of [MUSCLE](https://drive5.com/muscle5) (MUltiple Sequence Comparison by Log-Expectation), a widely-used multiple sequence alignment tool for biological sequences.
 
 **work in progress but near completion**
 
@@ -84,14 +87,104 @@ cargo test -- --test-threads=1
 ```
 
 The exact-output parity tests compare translated Rust behavior against an
-original MUSCLE C++ binary. In this workspace, those tests expect the original
-binary at:
+in-tree build of the original MUSCLE C++ binary. Build it once before running
+the test suite:
 
 ```sh
-/data/henriksson/github/claude/oldmuscle/muscle/bin/muscle
+cd muscle/src
+echo '"0"' > gitver.txt
+g++ -O2 -fopenmp -o muscle $(grep -oE 'ClCompile Include="[^"]+\.cpp"' muscle.vcxproj | sort -u | sed 's/.*"\(.*\)"/\1/')
 ```
 
+The tests auto-discover the binary at `muscle/src/muscle` relative to the
+crate root. Set `MUSCLE_CPP_BIN=/path/to/muscle` to override. When neither is
+available, parity tests print a skip message and exit successfully.
+
 The tests also exercise real upstream fixtures in `muscle/test_data`.
+
+## Benchmarks
+
+These are single-run local measurements on the BAliBASE fixtures in
+`muscle/test_data/fa`, using `/usr/bin/time` wall seconds and max RSS. They are
+intended as translation sanity checks, not stable published benchmarks. Output
+files were byte-identical between C++ and Rust for the `-threads 1` runs below.
+
+### `-threads 1`
+
+| Command | Fixture | C++ time | Rust time | C++ RSS | Rust RSS |
+|---|---:|---:|---:|---:|---:|
+| `-align` | BB11005 | 9.93s | 3.47s | 29.5 MiB | 64.6 MiB |
+| `-align` | BB11007 | 4.84s | 1.82s | 21.4 MiB | 16.4 MiB |
+| `-super5` | BB11005 | 17.37s | 10.23s | 36.4 MiB | 16.8 MiB |
+| `-super5` | BB11007 | 6.42s | 4.55s | 24.5 MiB | 16.9 MiB |
+| `-super6` | BB11005 | 5.11s | 3.61s | 29.4 MiB | 31.8 MiB |
+| `-super6` | BB11007 | 3.58s | 1.77s | 21.1 MiB | 15.9 MiB |
+
+### `-threads 5`
+
+The original C++ binary uses OpenMP in these paths and is faster at five
+threads on these small fixtures, with substantially higher RSS. Rust currently
+keeps memory use low but does not get comparable thread scaling here. The
+`-super6 BB11005` output was not byte-identical at `-threads 5`; this command is
+known to be thread-order sensitive in the original clustering path.
+
+| Command | Fixture | C++ time | Rust time | C++ RSS | Rust RSS |
+|---|---:|---:|---:|---:|---:|
+| `-align` | BB11005 | 1.29s | 3.57s | 103.7 MiB | 64.0 MiB |
+| `-align` | BB11007 | 0.47s | 1.70s | 63.7 MiB | 44.8 MiB |
+| `-super5` | BB11005 | 4.54s | 9.43s | 129.3 MiB | 18.4 MiB |
+| `-super5` | BB11007 | 2.27s | 4.23s | 78.8 MiB | 18.7 MiB |
+| `-super6` | BB11005 | 1.17s | 3.80s | 108.9 MiB | 28.2 MiB |
+| `-super6` | BB11007 | 0.59s | 1.65s | 63.1 MiB | 31.9 MiB |
+
+
+## Faithfulness note: unstable quicksort
+
+The original MUSCLE C++ source uses a custom **unstable** Hoare-partition
+quicksort (`QuickSortOrder` / `QuickSortOrderDesc` in `muscle/src/sort.h`) in
+several hot paths — uclust, uclustpd, uclustpd2, eesort, sweeper, treesplitter,
+length-ordering inside `MultiSequence::GetLengthOrder`, the `USorter` top-hit
+search, and a few internal selection routines. Because the sort is unstable,
+**elements with equal keys come out in an order determined by the partition
+pivot, not by their input order**.
+
+To preserve byte-for-byte parity with the C++ binary, this Rust port replays
+the same Hoare partition (see `quick_sort_order_desc_by` / `quick_sort_order_by`
+in `src/countsort.rs`) at the same call sites instead of using Rust's stable
+`sort_by`. A stable sort would *also* be a deterministic ordering — just a
+different one — which is enough to silently change cluster centroids, output
+sequence ordering, and downstream computation when ties are present.
+
+**When this can affect reproducibility:**
+
+- **Across MUSCLE versions / builds** — the C++ quicksort's tie-break depends
+  on pivot choice (here, the midpoint), so even small changes to that algorithm
+  (different compiler optimisations, vectorisation, parallel sort variants) can
+  reshuffle tied keys.
+- **uclust / uclustpd / uclustpd2 on inputs with tied sequence lengths** —
+  iteration order through `GetLengthOrder` determines which sequences become
+  centroids first; ties make this order pivot-dependent.
+- **`USorter` and `eesort` when several DB sequences share the top word-count
+  or expected-accuracy score** — the reported "best hit" / output ordering
+  depends on the unstable sort.
+- **`Sweeper` parameter listings, `TreeSplitter` size ordering, and any
+  benchmark CSV that ranks ties (`cmd_newbench_selectpfams`)**.
+
+**When this is unlikely to matter:**
+
+- Inputs whose sorted keys are all distinct (most "real" protein/DNA data with
+  varied sequence lengths, distinct E-values, distinct PD scores).
+- Commands that don't internally rank by a tied numerical key — `derep`,
+  `make_a2m`, `squeeze_inserts`, `trimtoref`, `strip_gappy*`, basic stats, etc.
+  These match the C++ binary regardless of sort behavior.
+- Downstream consumers that read the output set rather than the output
+  *ordering* (e.g. "the set of cluster centroids" is unaffected; "the order
+  centroids are printed in" can flip).
+
+If you care about reproducibility across MUSCLE versions or unrelated runs,
+**don't rely on the order of tied elements** in MUSCLE's output — explicitly
+re-sort with a stable key downstream. Parity is preserved here as a faithful
+translation property, not a guarantee that the chosen order is canonical.
 
 
 ## Citing

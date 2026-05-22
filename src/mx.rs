@@ -1,0 +1,308 @@
+// Generated translation scaffold. Regenerate from CCC output when needed.
+#[allow(unused_imports)]
+use crate::*;
+
+#[derive(Clone, Debug, Default)]
+pub struct SeqData; // original: SeqData (muscle/src/mx.h)
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MxBase {
+    pub name: String,
+    pub row_count: uint,
+    pub col_count: uint,
+    pub allocated_row_count: uint,
+    pub allocated_col_count: uint,
+    pub data: Vec<Vec<f32>>,
+} // original: MxBase (muscle/src/mx.h)
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct MxBaseCounts {
+    pub(crate) alloc_count: uint,
+    pub(crate) zero_alloc_count: uint,
+    pub(crate) grow_alloc_count: uint,
+    pub(crate) total_bytes: f64,
+    pub(crate) max_bytes: f64,
+}
+
+pub(crate) static MX_BASE_COUNTS: std::sync::Mutex<MxBaseCounts> =
+    std::sync::Mutex::new(MxBaseCounts {
+        alloc_count: 0,
+        zero_alloc_count: 0,
+        grow_alloc_count: 0,
+        total_bytes: 0.0,
+        max_bytes: 0.0,
+    });
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Mx {
+    pub name: String,
+    pub row_count: uint,
+    pub col_count: uint,
+    pub data: Vec<Vec<f32>>,
+} // original: Mx (muscle/src/mx.h)
+
+/// Parses `s` as a float, takes its natural log, and formats the result for matrix display.
+pub fn logize_str(s: &str) -> String {
+    let format_g4 = |d: f64| -> String {
+        if d == 0.0 {
+            return "0".to_string();
+        }
+        if !d.is_finite() {
+            return d.to_string();
+        }
+        let exp = d.abs().log10().floor() as i32;
+        let mut s = if exp < -4 || exp >= 4 {
+            let raw = format!("{d:.3e}");
+            let (mantissa, exponent) = raw.split_once('e').unwrap();
+            let mut mantissa = mantissa
+                .trim_end_matches('0')
+                .trim_end_matches('.')
+                .to_string();
+            if mantissa == "-0" {
+                mantissa = "0".to_string();
+            }
+            let exp_value = exponent.parse::<i32>().unwrap();
+            let sign = if exp_value >= 0 { '+' } else { '-' };
+            format!("{mantissa}e{sign}{:02}", exp_value.abs())
+        } else {
+            let decimals = (3 - exp).max(0) as usize;
+            format!("{d:.decimals$}")
+        };
+        if !s.contains('e') && !s.contains('E') {
+            s = s.trim_end_matches('0').trim_end_matches('.').to_string();
+        }
+        if s == "-0" {
+            s = "0".to_string();
+        }
+        s
+    };
+    let f = (s.parse::<f64>().unwrap_or(0.0).ln()) as f32;
+    if f == -8e8_f32 {
+        format!("{:>12.12}", "?")
+    } else if f < -9e9_f32 / 2.0 {
+        format!("{:>12.12}", "*")
+    } else if f == 0.0 {
+        format!("{:>12.12}", ".")
+    } else if (-1e5_f32..=1e5_f32).contains(&f) {
+        format!("{:12.5}", f)
+    } else {
+        format!("{:>12}", format_g4(f64::from(f)))
+    }
+}
+
+/// Parses `s` as a float, exponentiates it, and formats the result for matrix display.
+pub fn expize_str(s: &str) -> String {
+    let format_g4 = |d: f64| -> String {
+        if d == 0.0 {
+            return "0".to_string();
+        }
+        if !d.is_finite() {
+            return d.to_string();
+        }
+        let exp = d.abs().log10().floor() as i32;
+        let mut s = if exp < -4 || exp >= 4 {
+            let raw = format!("{d:.3e}");
+            let (mantissa, exponent) = raw.split_once('e').unwrap();
+            let mut mantissa = mantissa
+                .trim_end_matches('0')
+                .trim_end_matches('.')
+                .to_string();
+            if mantissa == "-0" {
+                mantissa = "0".to_string();
+            }
+            let exp_value = exponent.parse::<i32>().unwrap();
+            let sign = if exp_value >= 0 { '+' } else { '-' };
+            format!("{mantissa}e{sign}{:02}", exp_value.abs())
+        } else {
+            let decimals = (3 - exp).max(0) as usize;
+            format!("{d:.decimals$}")
+        };
+        if !s.contains('e') && !s.contains('E') {
+            s = s.trim_end_matches('0').trim_end_matches('.').to_string();
+        }
+        if s == "-0" {
+            s = "0".to_string();
+        }
+        s
+    };
+    let f = (s.parse::<f64>().unwrap_or(0.0).exp()) as f32;
+    if f == -8e8_f32 {
+        format!("{:>12.12}", "?")
+    } else if f < -9e9_f32 / 2.0 {
+        format!("{:>12.12}", "*")
+    } else if f == 0.0 {
+        format!("{:>12.12}", ".")
+    } else if (-1e5_f32..=1e5_f32).contains(&f) {
+        format!("{:12.5}", f)
+    } else {
+        format!("{:>12}", format_g4(f64::from(f)))
+    }
+}
+
+/// Construction hook for an `MxBase` instance; placeholder for accounting/instrumentation.
+pub fn mx_base_on_ctor(mx: &mut MxBase) {
+    let _name_len = mx.name.len();
+    let _shape = (mx.row_count, mx.col_count);
+}
+
+/// Destruction hook for an `MxBase` instance; placeholder for accounting/instrumentation.
+pub fn mx_base_on_dtor(mx: &mut MxBase) {
+    let _allocated_shape = (mx.allocated_row_count, mx.allocated_col_count);
+    let _active_shape = (mx.row_count, mx.col_count);
+    let _data_rows = mx.data.len();
+    let _name_len = mx.name.len();
+}
+
+/// Allocates (or grows) the underlying matrix storage with slack padding, updating global counters.
+#[track_caller]
+pub fn mx_base_alloc(mx: &mut MxBase, row_count: uint, col_count: uint, name: &str) {
+    mx.name = name.to_string();
+    let mut counts = MX_BASE_COUNTS.lock().unwrap();
+    counts.alloc_count += 1;
+    if mx.allocated_row_count == 0 {
+        counts.zero_alloc_count += 1;
+    }
+
+    if row_count > mx.allocated_row_count || col_count > mx.allocated_col_count {
+        if mx.allocated_row_count > 0 {
+            counts.grow_alloc_count += 1;
+        }
+        let old_bytes = f64::from(mx.allocated_row_count)
+            * f64::from(mx.allocated_col_count)
+            * std::mem::size_of::<f32>() as f64;
+        counts.total_bytes -= old_bytes;
+        let n = std::cmp::max(row_count + 16, mx.allocated_row_count);
+        let m = std::cmp::max(col_count + 16, mx.allocated_col_count);
+        mx.data = vec![vec![0.0; m as usize]; n as usize];
+        mx.allocated_row_count = n;
+        mx.allocated_col_count = m;
+        let new_bytes = f64::from(n) * f64::from(m) * std::mem::size_of::<f32>() as f64;
+        counts.total_bytes += new_bytes;
+        if counts.total_bytes > counts.max_bytes {
+            counts.max_bytes = counts.total_bytes;
+        }
+    }
+
+    mx.name = name.to_string();
+    assert!(row_count <= mx.allocated_row_count);
+    assert!(col_count <= mx.allocated_col_count);
+    mx.row_count = row_count;
+    mx.col_count = col_count;
+}
+
+/// Pretty-prints a matrix with optional log/exp scaling for human-readable diagnostics.
+#[track_caller]
+pub fn mx_base_log_me(mx: &MxBase, with_data: bool, opts: i32) -> String {
+    let get_as_str = |i: uint, j: uint| -> String {
+        let format_g4 = |d: f64| -> String {
+            if d == 0.0 {
+                return "0".to_string();
+            }
+            if !d.is_finite() {
+                return d.to_string();
+            }
+            let exp = d.abs().log10().floor() as i32;
+            let mut s = if exp < -4 || exp >= 4 {
+                let raw = format!("{d:.3e}");
+                let (mantissa, exponent) = raw.split_once('e').unwrap();
+                let mut mantissa = mantissa
+                    .trim_end_matches('0')
+                    .trim_end_matches('.')
+                    .to_string();
+                if mantissa == "-0" {
+                    mantissa = "0".to_string();
+                }
+                let exp_value = exponent.parse::<i32>().unwrap();
+                let sign = if exp_value >= 0 { '+' } else { '-' };
+                format!("{mantissa}e{sign}{:02}", exp_value.abs())
+            } else {
+                let decimals = (3 - exp).max(0) as usize;
+                format!("{d:.decimals$}")
+            };
+            if !s.contains('e') && !s.contains('E') {
+                s = s.trim_end_matches('0').trim_end_matches('.').to_string();
+            }
+            if s == "-0" {
+                s = "0".to_string();
+            }
+            s
+        };
+        let f = mx.data[i as usize][j as usize];
+        if f == UNINIT {
+            format!("{:>12.12}", "?")
+        } else if f < MINUS_INFINITY / 2.0 {
+            format!("{:>12.12}", "*")
+        } else if f == 0.0 {
+            format!("{:>12.12}", ".")
+        } else if (-1e5_f32..=1e5_f32).contains(&f) {
+            format!("{:12.5}", f)
+        } else {
+            format!("{:>12}", format_g4(f64::from(f)))
+        }
+    };
+    let mut out = String::new();
+    out.push('\n');
+    if opts & OPT_EXP != 0 {
+        out.push_str("Exp ");
+    } else if opts & OPT_LOG != 0 {
+        out.push_str("Log ");
+    }
+    out.push_str(&format!(
+        "{} Rows {}/{}, Cols {}/{}\n",
+        mx.name, mx.row_count, mx.allocated_row_count, mx.col_count, mx.allocated_col_count
+    ));
+    if !with_data || mx.row_count == 0 || mx.col_count == 0 {
+        return out;
+    }
+
+    let width = get_as_str(0, 0).len();
+    let mut modulus = 1_u32;
+    for _ in 0..width {
+        modulus = modulus.wrapping_mul(10);
+    }
+    if modulus == 0 {
+        modulus = 1;
+    }
+    out.push_str(&format!("{:5.5}", ""));
+    for j in 0..mx.col_count {
+        out.push_str(&format!("{:>width$}", j % modulus));
+    }
+    out.push('\n');
+    for i in 0..mx.row_count {
+        out.push_str(&format!("{:4} ", i));
+        for j in 0..mx.col_count {
+            let mut s = get_as_str(i, j);
+            if opts & OPT_LOG != 0 {
+                s = logize_str(s.trim());
+            } else if opts & OPT_EXP != 0 {
+                s = expize_str(s.trim());
+            }
+            out.push_str(&s);
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// Returns a formatted summary of the global `MxBase` allocation counters.
+#[track_caller]
+pub fn mx_base_log_counts() -> String {
+    let counts = MX_BASE_COUNTS.lock().unwrap();
+    let mut out = String::new();
+    out.push('\n');
+    out.push_str("MxBase::LogCounts()\n");
+    out.push_str("      What           N\n");
+    out.push_str("----------  ----------\n");
+    out.push_str(&format!("    Allocs  {:10}\n", counts.alloc_count));
+    out.push_str(&format!("ZeroAllocs  {:10}\n", counts.zero_alloc_count));
+    out.push_str(&format!("     Grows  {:10}\n", counts.grow_alloc_count));
+    out.push_str(&format!(
+        "     Bytes  {:>10.10}\n",
+        mem_bytes_to_str(counts.total_bytes)
+    ));
+    out.push_str(&format!(
+        " Max bytes  {:>10.10}\n",
+        mem_bytes_to_str(counts.max_bytes)
+    ));
+    out
+}

@@ -10,3 +10,12 @@ tracehash = { package = "tracehash-rs", version = "0.2.0", optional = true }
 [features]
 default = []
 tracehash = ["dep:tracehash"]
+
+[profile.release]
+# Whole-program LTO and a single codegen unit let LLVM inline across the
+# many small functions in the HMM/sparse-mx hot paths. Verified to keep
+# byte-equality with C++ on the parity suite; trims a few percent off
+# wall-clock at the cost of slower builds.
+lto = "fat"
+codegen-units = 1
+panic = "abort"
