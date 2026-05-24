@@ -1,8 +1,28 @@
+#![allow(
+    clippy::collapsible_if,
+    clippy::erasing_op,
+    clippy::excessive_precision,
+    clippy::field_reassign_with_default,
+    clippy::identity_op,
+    clippy::manual_div_ceil,
+    clippy::needless_range_loop,
+    clippy::redundant_closure,
+    clippy::single_element_loop,
+    clippy::unnecessary_cast,
+    clippy::useless_vec
+)]
+
 use muscle_rs::*;
 use std::sync::Mutex;
 
 static RNG_TEST_LOCK: Mutex<()> = Mutex::new(());
 static GLOBAL_STATE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+#[cfg(unix)]
+unsafe extern "C" {
+    fn tmpfile() -> *mut CppFile;
+    fn fclose(stream: *mut CppFile) -> i32;
+}
 
 fn original_muscle_bin() -> Option<String> {
     if let Ok(path) = std::env::var("MUSCLE_CPP_BIN") {
@@ -49,6 +69,32 @@ fn original_command_body(output: &std::process::Output) -> String {
         return stdout_body;
     }
     original_stream_body(&output.stderr)
+}
+
+#[test]
+fn high_level_builder_aligns_fasta_text() {
+    let _global_guard = GLOBAL_STATE_TEST_LOCK.lock().unwrap();
+    let input = ">a\nACDEFG\n>b\nACDFG\n>c\nACDEYG\n";
+
+    let alignment = Muscle::builder()
+        .input_fasta(input)
+        .threads(1)
+        .consistency_iters(1)
+        .refine_iters(1)
+        .build()
+        .expect("builder alignment should succeed");
+
+    let fasta = alignment.as_fasta();
+    assert!(fasta.contains(">a\n"));
+    assert!(fasta.contains(">b\n"));
+    assert!(fasta.contains(">c\n"));
+    let msa = msa_from_strings(
+        &fasta
+            .lines()
+            .map(std::string::ToString::to_string)
+            .collect::<Vec<_>>(),
+    );
+    assert!(multi_sequence_is_aligned(&msa));
 }
 
 #[test]
@@ -215,6 +261,10 @@ fn flat_buffer_sizes_match_cpp_formulas() {
     assert_eq!(prof_out.seqs.len(), 3);
     assert_eq!(sequence_get_seq_as_string(&prof_out.seqs[0]), "A-C---");
     assert_eq!(sequence_get_seq_as_string(&prof_out.seqs[2]), "---T-T");
+    assert_eq!(
+        sequence_get_seq_as_string(&get_global_input_seq_by_label("p1a")),
+        "AC"
+    );
 
     let prof_dir = std::env::temp_dir().join(format!("muscle_rs_profalign_{}", std::process::id()));
     std::fs::create_dir_all(&prof_dir).unwrap();
@@ -253,6 +303,10 @@ fn flat_buffer_sizes_match_cpp_formulas() {
         std::fs::read_to_string(&prof_out_file).unwrap(),
         ">q1\nEF-IL-----\n>q2\nPQRS------\n>t1\n-----WY-VV\n"
     );
+    assert_eq!(
+        sequence_get_seq_as_string(&get_global_input_seq_by_label("q1")),
+        "EFIL"
+    );
 
     let mut profseq_profile = MultiSequence::default();
     multi_sequence_from_strings(
@@ -285,6 +339,8 @@ fn flat_buffer_sizes_match_cpp_formulas() {
     let profseq_query_file = prof_dir.join("profseq_query.fa");
     std::fs::write(&profseq_profile_file, b">ps1\nAA\n>ps2\nCC\n").unwrap();
     std::fs::write(&profseq_query_file, b">q1\nGG\n>q2\nTT\n").unwrap();
+    let progress_log_file = prof_dir.join("prof_progress.log");
+    set_log_file_name(progress_log_file.to_str().unwrap());
     let mut cmd_profseq_pairs = Vec::new();
     let (_hp, cmd_profseq_paths) = cmd_profseq(
         profseq_profile_file.to_str().unwrap(),
@@ -301,8 +357,20 @@ fn flat_buffer_sizes_match_cpp_formulas() {
             );
         },
     );
+    set_log_file_name("");
     assert_eq!(cmd_profseq_pairs, vec![(0, 2), (1, 2), (0, 2), (1, 2)]);
     assert_eq!(cmd_profseq_paths, vec!["BB".to_string(), "BB".to_string()]);
+    assert_eq!(
+        sequence_get_seq_as_string(&get_global_input_seq_by_label("q1")),
+        "EFIL"
+    );
+    let profseq_progress_log = std::fs::read_to_string(&progress_log_file).unwrap();
+    assert_eq!(
+        profseq_progress_log
+            .matches("100.0% Calc posteriors\n")
+            .count(),
+        2
+    );
 
     let profprof_a = prof_dir.join("profprof_a.fa");
     let profprof_b = prof_dir.join("profprof_b.fa");
@@ -311,6 +379,9 @@ fn flat_buffer_sizes_match_cpp_formulas() {
     let profprof_p2 = prof_dir.join("profprof_p2.tsv");
     let profprof_p3 = prof_dir.join("profprof_p3.tsv");
     let profprof_p4 = prof_dir.join("profprof_p4.tsv");
+    let profprof_log_file = prof_dir.join("profprof.log");
+    let profprof5_file = std::path::Path::new("prof5.tsv");
+    let _ = std::fs::remove_file(profprof5_file);
     std::fs::write(&profprof_a, b">pa1\nAA\n>pa2\nCC\n").unwrap();
     std::fs::write(&profprof_b, b">pb1\nGG\n>pb2\nTT\n").unwrap();
     let profprof_ap = M3AlnParams {
@@ -319,6 +390,7 @@ fn flat_buffer_sizes_match_cpp_formulas() {
         ready: true,
         ..M3AlnParams::default()
     };
+    set_log_file_name(profprof_log_file.to_str().unwrap());
     let (profprof_msa, _prof1, _prof2, prof12_msa, _prof12_path, diff_count, profprof_log) =
         cmd_profprof3(
             profprof_a.to_str().unwrap(),
@@ -357,10 +429,22 @@ fn flat_buffer_sizes_match_cpp_formulas() {
                 prof
             },
         );
+    set_log_file_name("");
     assert_eq!(diff_count, 0);
     assert_eq!(profprof_msa.seqs.len(), 4);
     assert_eq!(prof12_msa.pps.len(), 2);
     assert!(profprof_log.contains("Score=4"));
+    let profprof_global_log = std::fs::read_to_string(&profprof_log_file).unwrap();
+    assert!(profprof_global_log.contains("_____________ Prof1 ________________________"));
+    assert!(
+        profprof_global_log.contains("______________________ Prof12Msa _________________________")
+    );
+    assert!(
+        profprof_global_log.contains("______________________ Prof12Path _________________________")
+    );
+    assert!(profprof_global_log.contains("Score=4"));
+    assert!(profprof_global_log.contains("Path=BB"));
+    assert!(profprof_global_log.contains("0 diffs"));
     assert_eq!(
         std::fs::read_to_string(&profprof_out).unwrap(),
         ">pa1\nAA\n>pa2\nCC\n>pb1\nGG\n>pb2\nTT\n"
@@ -375,6 +459,11 @@ fn flat_buffer_sizes_match_cpp_formulas() {
             .unwrap()
             .contains("0\t1")
     );
+    assert_eq!(
+        std::fs::read_to_string(profprof5_file).unwrap(),
+        std::fs::read_to_string(&profprof_p3).unwrap()
+    );
+    let _ = std::fs::remove_file(profprof5_file);
     std::fs::remove_dir_all(&prof_dir).unwrap();
 
     let mut dp_rows = alloc_dp_rows(2, 3);
@@ -536,6 +625,11 @@ fn flat_buffer_sizes_match_cpp_formulas() {
         direct_post
     );
     let mut pprog_sparse_posts = Vec::new();
+    let pprog_log = std::env::temp_dir().join(format!(
+        "muscle_rs_pprog_flat_progress_{}.log",
+        std::process::id()
+    ));
+    set_log_file_name(pprog_log.to_str().unwrap());
     let avg_ea = p_prog_get_post_pairs_aligned_flat(
         "long-progress-string-that-is-truncated",
         &msa_left,
@@ -544,9 +638,13 @@ fn flat_buffer_sizes_match_cpp_formulas() {
         &[0],
         &mut pprog_sparse_posts,
     );
+    set_log_file_name("");
     assert_eq!(pprog_sparse_posts.len(), 1);
     assert_eq!(my_sparse_mx_to_post(&pprog_sparse_posts[0]), direct_post);
     assert!((avg_ea - score_direct).abs() < 1e-6);
+    let pprog_log_text = std::fs::read_to_string(&pprog_log).unwrap();
+    assert!(pprog_log_text.contains("100.0% long-progress-string [1 x 1, 1 pairs]\n"));
+    std::fs::remove_file(&pprog_log).unwrap();
     let mut pprog_path = String::new();
     let pprog_avg = p_prog_align_ms_as_flat(
         "flat-progress",
@@ -570,6 +668,40 @@ fn flat_buffer_sizes_match_cpp_formulas() {
     );
     assert!((pprog3_avg - score_direct).abs() < 1e-6);
     assert_eq!(pprog3_path, path_direct);
+    let mut unaligned_msa = MultiSequence::default();
+    multi_sequence_from_strings(
+        &mut unaligned_msa,
+        &["u0".to_string(), "u1".to_string()],
+        &["A".to_string(), "AA".to_string()],
+    );
+    let mut panic_path = String::new();
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            p_prog_align_ms_as_flat(
+                "flat-unaligned",
+                &unaligned_msa,
+                &msa_right,
+                0,
+                &mut panic_path,
+            );
+        }))
+        .is_err()
+    );
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            p_prog_align_ms_as_flat3(
+                "flat3-unaligned",
+                &msa_left,
+                &unaligned_msa,
+                &[],
+                0,
+                0,
+                1,
+                &mut panic_path,
+            );
+        }))
+        .is_err()
+    );
     let mut mega_left = MultiSequence::default();
     let mut mega_right = MultiSequence::default();
     multi_sequence_from_strings(&mut mega_left, &["mega_l".to_string()], &["A-".to_string()]);
@@ -578,6 +710,11 @@ fn flat_buffer_sizes_match_cpp_formulas() {
         &["mega_r".to_string()],
         &["-C".to_string()],
     );
+    let mega_log = std::env::temp_dir().join(format!(
+        "muscle_rs_mega_flat_progress_{}.log",
+        std::process::id()
+    ));
+    set_log_file_name(mega_log.to_str().unwrap());
     let mut mega_sparse_posts = Vec::new();
     let mega_avg = get_post_pairs_aligned_flat_mega(
         "mega-progress-string-that-is-truncated",
@@ -587,9 +724,13 @@ fn flat_buffer_sizes_match_cpp_formulas() {
         &[0],
         &mut mega_sparse_posts,
     );
+    set_log_file_name("");
     assert_eq!(mega_sparse_posts.len(), 1);
     assert_eq!(my_sparse_mx_to_post(&mega_sparse_posts[0]), direct_post);
     assert!((mega_avg - score_direct).abs() < 1e-6);
+    let mega_log_text = std::fs::read_to_string(&mega_log).unwrap();
+    assert!(mega_log_text.contains("100.0% mega-progress-string [1 x 1, 1 pairs]\n"));
+    std::fs::remove_file(&mega_log).unwrap();
     let mut mega_path = String::new();
     let mega_align_avg = align_ms_as_flat_mega(
         "mega-align-progress",
@@ -645,6 +786,39 @@ fn flat_buffer_sizes_match_cpp_formulas() {
         direct_post
     );
     assert!((mpc.dist_mx[0][1] - score_direct).abs() < 1e-6);
+
+    let mut post_ms3 = MultiSequence::default();
+    multi_sequence_from_strings(
+        &mut post_ms3,
+        &["cp0".to_string(), "cp1".to_string(), "cp2".to_string()],
+        &["A".to_string(), "C".to_string(), "A".to_string()],
+    );
+    let mut mpc3 = MPCFlat::default();
+    mpc_flat_init_seqs(&mut mpc3, &post_ms3);
+    mpc_flat_init_pairs(&mut mpc3);
+    mpc_flat_init_dist_mx(&mut mpc3);
+    mpc_flat_alloc_pair_count(&mut mpc3, 3);
+    let expected3 = mpc3
+        .pairs
+        .iter()
+        .map(|&pair| mpc_flat_calc_posterior_result_for_pair(pair, &post_ms3))
+        .collect::<Vec<_>>();
+    mpc_flat_calc_posteriors(&mut mpc3);
+    for (pair_index, (expected_sparse, expected_ea, seq_index_x, seq_index_y)) in
+        expected3.iter().enumerate()
+    {
+        assert_eq!(
+            my_sparse_mx_to_post(mpc3.sparse_posts1[pair_index].as_ref().unwrap()),
+            my_sparse_mx_to_post(expected_sparse)
+        );
+        assert!(
+            (mpc3.dist_mx[*seq_index_x as usize][*seq_index_y as usize] - expected_ea).abs() < 1e-6
+        );
+        assert_eq!(
+            mpc3.dist_mx[*seq_index_x as usize][*seq_index_y as usize],
+            mpc3.dist_mx[*seq_index_y as usize][*seq_index_x as usize]
+        );
+    }
 }
 
 #[test]
@@ -659,6 +833,8 @@ fn unsigned_string_helpers_match_cpp_behavior() {
     assert_eq!(str_to_uint_l1313("17", false), 17);
     assert_eq!(str_to_uint64_l1294("4294967296"), 4_294_967_296);
     assert_eq!(str_to_uint64_l1308("99"), 99);
+    assert_eq!(str_to_uint_l1278("4294967296", false), 0);
+    assert_eq!(str_to_uint64_l1294("18446744073709551616"), 0);
 }
 
 #[test]
@@ -704,7 +880,18 @@ fn formatting_helpers_follow_muscle_units() {
     assert_eq!(int_float_to_str(12_345.0), "12.3k");
     assert_eq!(int_float_to_str(1.234e12), "1.23e+12");
     assert_eq!(myvstrprintf("abc"), "abc");
+    let long_format = "x".repeat(64_100);
+    let truncated_format = myvstrprintf(&long_format);
+    assert_eq!(truncated_format.len(), 63_999);
+    assert!(truncated_format.bytes().all(|b| b == b'x'));
     assert_eq!(pf("file text"), "file text");
+    let pf_path = std::env::temp_dir().join(format!("muscle_rs_pf_{}.txt", std::process::id()));
+    let mut pf_file_sink = create_stdio_file(pf_path.to_str().unwrap()).unwrap();
+    pf_file(Some(&mut pf_file_sink), "file text");
+    pf_file(None, "ignored");
+    close_stdio_file(Some(pf_file_sink));
+    assert_eq!(std::fs::read_to_string(&pf_path).unwrap(), "file text");
+    std::fs::remove_file(&pf_path).unwrap();
     let mut s = String::new();
     ps(&mut s, "alpha");
     assert_eq!(s, "alpha");
@@ -714,7 +901,16 @@ fn formatting_helpers_follow_muscle_units() {
     assert_eq!(s, "alphabeta;gamma;");
     psasc(&mut s, "delta;");
     assert_eq!(s, "alphabeta;gamma;delta;");
+    let warning_log_file =
+        std::env::temp_dir().join(format!("muscle_rs_warning_{}.txt", std::process::id()));
+    set_log_file_name(warning_log_file.to_str().unwrap());
     assert_eq!(warning("careful"), "\nWARNING: careful\n\n");
+    set_log_file_name("");
+    assert_eq!(
+        std::fs::read_to_string(&warning_log_file).unwrap(),
+        "\nWARNING: careful\n"
+    );
+    std::fs::remove_file(&warning_log_file).unwrap();
     assert_eq!(get_thread_str().capacity(), 64001);
     assert!(get_progress_prefix_str().ends_with(' '));
     assert_eq!(get_progress_prefix_c_str(), get_progress_prefix_str());
@@ -722,24 +918,78 @@ fn formatting_helpers_follow_muscle_units() {
     assert_eq!(progress("work\n"), "work\n");
     assert!(!progress_prefix(true));
     assert!(progress("work\n").ends_with("work\n"));
+    {
+        let mut argv = G_ARGV.lock().unwrap();
+        argv.clear();
+        argv.push("muscle".to_string());
+        argv.push("-align".to_string());
+        argv.push("input.fa".to_string());
+    }
+    assert_eq!(main_cpp_short_cmd_progress(), "[align input.fa]\n");
+    assert_eq!(get_arg1(), "input.fa");
     assert_eq!(progress_log("log text"), "log text");
-    assert_eq!(progress_log_prefix("log text"), "log text\n");
+    let prefix_log_file = std::env::temp_dir().join(format!(
+        "muscle_rs_progress_log_prefix_{}.txt",
+        std::process::id()
+    ));
+    set_log_file_name(prefix_log_file.to_str().unwrap());
+    assert!(progress_log_prefix("log text").ends_with("log text\n"));
+    set_log_file_name("");
+    assert_eq!(
+        std::fs::read_to_string(&prefix_log_file).unwrap(),
+        "log text\n"
+    );
+    std::fs::remove_file(&prefix_log_file).unwrap();
     assert_eq!(pr("printed"), "printed");
+    let pr_path = std::env::temp_dir().join(format!("muscle_rs_pr_{}.txt", std::process::id()));
+    let mut pr_file_sink = create_stdio_file(pr_path.to_str().unwrap()).unwrap();
+    pr_file(Some(&mut pr_file_sink), "printed");
+    pr_file(None, "ignored");
+    close_stdio_file(Some(pr_file_sink));
+    assert_eq!(std::fs::read_to_string(&pr_path).unwrap(), "printed");
+    std::fs::remove_file(&pr_path).unwrap();
     let tmp =
         std::env::temp_dir().join(format!("muscle_rs_stdio_state_{}.txt", std::process::id()));
     std::fs::write(&tmp, b"abcdef").unwrap();
     let mut file = open_stdio_file(tmp.to_str().unwrap());
+    assert_eq!(fseeko(&mut file, 2, 0), 0);
+    assert_eq!(get_stdio_file_pos64(&mut file), 2);
+    assert_eq!(fseeko(&mut file, 1, 1), 0);
+    assert_eq!(get_stdio_file_pos64(&mut file), 3);
+    assert_eq!(fseeko(&mut file, -1, 2), 0);
+    assert_eq!(get_stdio_file_pos64(&mut file), 5);
+    assert_eq!(fseeko(&mut file, 0, 99), -1);
     set_stdio_file_pos64(&mut file, 3);
+    let state_log_file = std::env::temp_dir().join(format!(
+        "muscle_rs_stdio_state_log_{}.txt",
+        std::process::id()
+    ));
+    set_log_file_name(state_log_file.to_str().unwrap());
     let state_log = log_stdio_file_state(&mut file);
+    set_log_file_name("");
     assert!(state_log.contains("fileno"));
     assert!(state_log.contains("ftell      3"));
-    assert!(state_log.contains("Not found in FileToFileName"));
+    assert!(state_log.contains(tmp.to_str().unwrap()));
+    assert_eq!(std::fs::read_to_string(&state_log_file).unwrap(), state_log);
     drop(file);
+    std::fs::remove_file(&state_log_file).unwrap();
     std::fs::remove_file(&tmp).unwrap();
     let p = myalloc(3, 4);
     assert_eq!(p.len(), 12);
+    assert_eq!(p, vec![0; 12]);
     myfree(Some(p));
     myfree(None);
+    let mut raw = myalloc_(5, 7);
+    assert_eq!(raw.len(), 35);
+    assert!(!raw.is_empty());
+    assert!(!raw.as_ptr().is_null());
+    unsafe {
+        std::ptr::write_bytes(raw.as_mut_ptr(), 0x5a, raw.len());
+    }
+    drop(raw);
+    let zero_raw = myalloc_(0, 7);
+    assert_eq!(zero_raw.len(), 0);
+    assert!(zero_raw.is_empty());
     let (tracked, loc) = myalloc_track("/tmp/source.cpp", 17, 2, 5);
     assert_eq!(tracked.len(), 10);
     assert_eq!(loc, "source.cpp:17");
@@ -860,18 +1110,25 @@ fn path_and_string_helpers_match_cpp_behavior() {
     std::fs::write(list_dir.join("a.txt"), b"a").unwrap();
     let read_dir_names = read_dir_l291(list_dir.to_str().unwrap());
     assert_eq!(read_dir_names, vec![".", "..", "a.txt", "b.txt"]);
-    assert_eq!(read_dir_l261(list_dir.to_str().unwrap()), read_dir_names);
+    assert_eq!(
+        read_dir_l261(list_dir.to_str().unwrap()),
+        vec![".", "..", "..", "a.txt", "a.txt", "b.txt", "b.txt"]
+    );
     let mut listed = mylistdir_l1122(list_dir.to_str().unwrap());
     listed.sort();
     assert_eq!(listed, vec![".", "..", "a.txt", "b.txt"]);
     let mut listed2 = mylistdir_l1096(list_dir.to_str().unwrap());
     listed2.sort();
     assert_eq!(listed2, vec![".", "..", "a.txt", "b.txt"]);
+    assert!(mylistdir_l1096(list_dir.join("missing").to_str().unwrap()).is_empty());
     std::fs::remove_file(list_dir.join("a.txt")).unwrap();
     std::fs::remove_file(list_dir.join("b.txt")).unwrap();
     std::fs::remove_dir(&list_dir).unwrap();
     assert_eq!(get_elapsed_time_str().len(), 5);
-    assert_eq!(get_max_ram_str(), " 0.0b");
+    assert_eq!(
+        get_max_ram_str(),
+        format!("{:>5}", mem_bytes_to_str(get_peak_mem_use_bytes()))
+    );
     let mut dir = "out".to_string();
     dirize(&mut dir);
     assert_eq!(dir, "out/");
@@ -902,7 +1159,33 @@ fn path_and_string_helpers_match_cpp_behavior() {
     log("123");
     set_log_file_name("");
     assert_eq!(std::fs::read_to_string(&log_file).unwrap(), "abc123");
+    set_log_file_name(log_file.to_str().unwrap());
+    assert_eq!(
+        progress_step(0, 2, "LogStep"),
+        Some(" 50.0% LogStep".to_string())
+    );
+    assert_eq!(
+        progress_step(1, 2, "LogStep"),
+        Some("100.0% LogStep".to_string())
+    );
+    set_log_file_name("");
+    let progress_log_text = std::fs::read_to_string(&log_file).unwrap();
+    assert!(progress_log_text.ends_with("100.0% LogStep\n"));
     std::fs::remove_file(&log_file).unwrap();
+    let progress_warning_log = std::env::temp_dir().join(format!(
+        "muscle_rs_progress_warning_{}.txt",
+        std::process::id()
+    ));
+    set_log_file_name(progress_warning_log.to_str().unwrap());
+    assert_eq!(
+        progress_step(0, 1, "RangeStep"),
+        Some("100.0% RangeStep".to_string())
+    );
+    assert_eq!(progress_step(1, 1, "RangeStep"), None);
+    set_log_file_name("");
+    let progress_warning_text = std::fs::read_to_string(&progress_warning_log).unwrap();
+    assert!(progress_warning_text.contains("WARNING: ProgressStep(1,1)"));
+    std::fs::remove_file(&progress_warning_log).unwrap();
     assert_eq!(log_int(123, uint::MAX), "123");
     assert_eq!(log_int(12345, uint::MAX), "12345 (12.3k)");
     assert_eq!(log_int(7, 3), "  7");
@@ -910,6 +1193,18 @@ fn path_and_string_helpers_match_cpp_behavior() {
     assert_eq!(logu(42, 4, 1), "   42");
     assert_eq!(logf(f32::MAX, 3, 1), "   *");
     assert_eq!(logf(1.25, 5, 2), "   1.25");
+    let log_columns_file =
+        std::env::temp_dir().join(format!("muscle_rs_log_columns_{}.txt", std::process::id()));
+    set_log_file_name(log_columns_file.to_str().unwrap());
+    assert_eq!(log_int(12345, 8), "   12345 (12.3k)");
+    assert_eq!(logu(uint::MAX, 3, 1), "   *");
+    assert_eq!(logf(1.25, 5, 2), "   1.25");
+    set_log_file_name("");
+    assert_eq!(
+        std::fs::read_to_string(&log_columns_file).unwrap(),
+        "   12345 (12.3k)   *   1.25"
+    );
+    std::fs::remove_file(&log_columns_file).unwrap();
     let cli = <MuscleCli as clap::Parser>::try_parse_from([
         "muscle",
         "--msastats",
@@ -1449,17 +1744,18 @@ fn path_and_string_helpers_match_cpp_behavior() {
         .output()
         .unwrap();
     assert!(swtest_cmd.status.success());
-    assert!(
-        String::from_utf8(swtest_cmd.stdout)
-            .unwrap()
-            .contains("         1  PS score ok\n")
-    );
+    let swtest_stdout = String::from_utf8(swtest_cmd.stdout).unwrap();
+    assert!(swtest_stdout.contains("         X  Fast_Seqs_AA_BLOSUM62\n"));
+    assert!(swtest_stdout.contains("         Y  PS\n"));
+    assert!(swtest_stdout.contains("         1  PS score ok\n"));
     let swtestmm_cmd = std::process::Command::new(env!("CARGO_BIN_EXE_muscle_rs"))
         .args(["-swtestmm", "x", "-quiet"])
         .output()
         .unwrap();
     assert!(swtestmm_cmd.status.success());
     let swtestmm_stdout = String::from_utf8(swtestmm_cmd.stdout).unwrap();
+    assert!(swtestmm_stdout.contains("         X  Enum_MASM_Mega\n"));
+    assert!(swtestmm_stdout.contains("         Y  Simple_MASM_Mega\n"));
     assert!(swtestmm_stdout.contains("      1000  Tests\n"));
     assert!(swtestmm_stdout.contains("      1000  Agree\n"));
     std::fs::remove_file(&cli_rdrp_align_in).unwrap();
@@ -1476,6 +1772,72 @@ fn path_and_string_helpers_match_cpp_behavior() {
     assert!(help_text.contains("Align FASTA input, write aligned FASTA (AFA) output:"));
     assert!(help_text.contains("header line \"<PERM.SEED\":"));
     assert_eq!(usage(), help_text);
+    assert_eq!(
+        my_cmd_line_cpp_literal_action(&["muscle".to_string()]),
+        CppLifecycleAction::Exit {
+            status: 0,
+            stdout: usage(),
+            stderr: String::new(),
+        }
+    );
+    assert_eq!(
+        my_cmd_line_cpp_literal_action(&["muscle".to_string(), "-version".to_string()]),
+        CppLifecycleAction::Exit {
+            status: 0,
+            stdout: cmd_version(),
+            stderr: String::new(),
+        }
+    );
+    assert_eq!(
+        my_cmd_line_cpp_literal_action(&["muscle".to_string(), "-compilerinfo".to_string()]),
+        CppLifecycleAction::Exit {
+            status: 0,
+            stdout: compiler_info(),
+            stderr: String::new(),
+        }
+    );
+    assert_eq!(
+        my_cmd_line_cpp_literal_action(&["muscle".to_string(), "input.fa".to_string()]),
+        CppLifecycleAction::Exit {
+            status: 1,
+            stdout: String::new(),
+            stderr: cmd_line_err_text("Expected -option_name or --option_name, got 'input.fa'"),
+        }
+    );
+    let no_arg_cmd = std::process::Command::new(env!("CARGO_BIN_EXE_muscle_rs"))
+        .output()
+        .unwrap();
+    assert!(no_arg_cmd.status.success());
+    assert_eq!(String::from_utf8(no_arg_cmd.stdout).unwrap(), usage());
+    assert!(no_arg_cmd.stderr.is_empty());
+    let help_cmd = std::process::Command::new(env!("CARGO_BIN_EXE_muscle_rs"))
+        .arg("-h")
+        .output()
+        .unwrap();
+    assert!(help_cmd.status.success());
+    assert_eq!(String::from_utf8(help_cmd.stdout).unwrap(), usage());
+    assert!(help_cmd.stderr.is_empty());
+    let bare_arg_cmd = std::process::Command::new(env!("CARGO_BIN_EXE_muscle_rs"))
+        .arg("input.fa")
+        .output()
+        .unwrap();
+    assert!(!bare_arg_cmd.status.success());
+    assert!(bare_arg_cmd.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8(bare_arg_cmd.stderr).unwrap(),
+        cmd_line_err_text("Expected -option_name or --option_name, got 'input.fa'")
+    );
+    let multi_cmd_die = std::process::Command::new(env!("CARGO_BIN_EXE_muscle_rs"))
+        .args(["-align", "a.fa", "-super5", "b.fa", "-quiet"])
+        .output()
+        .unwrap();
+    assert_eq!(multi_cmd_die.status.code(), Some(1));
+    assert!(multi_cmd_die.stdout.is_empty());
+    let multi_cmd_die_stderr = String::from_utf8(multi_cmd_die.stderr).unwrap();
+    assert_eq!(
+        multi_cmd_die_stderr,
+        "\n---Fatal error---\nMore than one command specified\n"
+    );
     let compiler = compiler_info();
     assert!(compiler.contains(" bits\n"));
     assert!(compiler.contains("sizeof(int) = 4\n"));
@@ -1490,21 +1852,75 @@ fn path_and_string_helpers_match_cpp_behavior() {
     }
     assert_eq!(get_cmd_line(), "muscle -align in.fa");
     assert_eq!(print_cmd_line(), "muscle -align in.fa \n");
+    let program_log_file =
+        std::env::temp_dir().join(format!("muscle_rs_program_log_{}.txt", std::process::id()));
+    set_log_file_name(program_log_file.to_str().unwrap());
     let log_info = log_program_info_and_cmd_line();
+    set_log_file_name("");
     assert!(log_info.contains(" built unknown unknown\n"));
     assert!(log_info.ends_with("muscle -align in.fa \n"));
+    assert_eq!(
+        std::fs::read_to_string(&program_log_file).unwrap(),
+        log_info
+    );
+    std::fs::remove_file(&program_log_file).unwrap();
+    let elapsed_log_file =
+        std::env::temp_dir().join(format!("muscle_rs_elapsed_{}.txt", std::process::id()));
+    set_log_file_name(elapsed_log_file.to_str().unwrap());
     let log_done = log_elapsed_time_and_ram();
+    set_log_file_name("");
     assert!(log_done.contains("Elapsed time "));
     assert!(log_done.contains("Max memory "));
+    assert_eq!(
+        std::fs::read_to_string(&elapsed_log_file).unwrap(),
+        log_done
+    );
+    std::fs::remove_file(&elapsed_log_file).unwrap();
     G_ARGV.lock().unwrap().clear();
+    reset_cmd_opt_state();
     assert!(try_flag_opt("quiet"));
+    assert_eq!(get_cmd_opt_value("quiet"), Some("true".to_string()));
     assert!(!try_flag_opt("threads"));
     assert_eq!(try_uns_opt("threads", "12"), Some(12));
+    assert_eq!(get_cmd_opt_value("threads"), Some("12".to_string()));
     assert_eq!(try_uns_opt("quiet", "12"), None);
     assert_eq!(try_float_opt("max_gap_fract", "0.25"), Some(0.25));
+    assert_eq!(get_cmd_opt_value("max_gap_fract"), Some("0.25".to_string()));
     assert_eq!(try_float_opt("threads", "0.25"), None);
     assert_eq!(try_str_opt("output", "out.fa"), Some("out.fa".to_string()));
+    assert_eq!(get_cmd_opt_value("output"), Some("out.fa".to_string()));
     assert_eq!(try_str_opt("quiet", "out.fa"), None);
+    let unused_warnings = check_used_opts(false);
+    assert_eq!(unused_warnings.len(), 4);
+    assert!(
+        unused_warnings
+            .iter()
+            .any(|warning| warning.contains("Option -quiet not used"))
+    );
+    assert!(
+        unused_warnings
+            .iter()
+            .any(|warning| warning.contains("Option -threads not used"))
+    );
+    assert!(
+        unused_warnings
+            .iter()
+            .any(|warning| warning.contains("Option -max_gap_fract not used"))
+    );
+    assert!(
+        unused_warnings
+            .iter()
+            .any(|warning| warning.contains("Option -output not used"))
+    );
+    set_cmd_opt_used("threads");
+    let used_filtered_warnings = check_used_opts(false);
+    assert_eq!(used_filtered_warnings.len(), 3);
+    assert!(
+        !used_filtered_warnings
+            .iter()
+            .any(|warning| warning.contains("Option -threads not used"))
+    );
+    reset_cmd_opt_state();
     assert!(
         check_used_opt(true, false, "threads")
             .unwrap()
@@ -1550,7 +1966,166 @@ fn path_and_string_helpers_match_cpp_behavior() {
         get_cmd_line(),
         "muscle -align in.fa -output out.fa -threads 2"
     );
+    assert_eq!(get_cmd_opt_value("align"), Some("in.fa".to_string()));
+    assert_eq!(get_cmd_opt_value("output"), Some("out.fa".to_string()));
+    assert_eq!(get_cmd_opt_value("threads"), Some("2".to_string()));
+    let parsed_unused_warnings = check_used_opts(false);
+    assert_eq!(parsed_unused_warnings.len(), 3);
+    assert!(
+        parsed_unused_warnings
+            .iter()
+            .any(|warning| warning.contains("Option -threads not used"))
+    );
+    assert!(
+        parsed_unused_warnings
+            .iter()
+            .any(|warning| warning.contains("Option -align not used"))
+    );
+
+    reset_cmd_opt_state();
+    my_cmd_line(&[
+        "muscle".to_string(),
+        "-align".to_string(),
+        "in.fa".to_string(),
+        "-quiet".to_string(),
+        "-log".to_string(),
+        "run.log".to_string(),
+        "-output".to_string(),
+        "out.fa".to_string(),
+    ]);
+    let cli = MuscleCli {
+        align: Some("in.fa".to_string()),
+        quiet: true,
+        log: Some("run.log".to_string()),
+        output: Some("out.fa".to_string()),
+        ..MuscleCli::default()
+    };
+    mark_main_cpp_entry_opts_used(&cli);
+    set_cmd_opt_used("align");
+    let main_entry_warnings = check_used_opts(false);
+    assert!(
+        !main_entry_warnings
+            .iter()
+            .any(|warning| warning.contains("Option -quiet not used"))
+    );
+    assert!(
+        !main_entry_warnings
+            .iter()
+            .any(|warning| warning.contains("Option -log not used"))
+    );
+    assert!(
+        main_entry_warnings
+            .iter()
+            .any(|warning| warning.contains("Option -output not used"))
+    );
+    reset_cmd_opt_state();
+    my_cmd_line(&[
+        "muscle".to_string(),
+        "-msastats".to_string(),
+        "in.fa".to_string(),
+        "-max_gap_fract".to_string(),
+        "0.2".to_string(),
+    ]);
+    set_cmd_opt_used("msastats");
+    set_cmd_opts_used(app_dispatch_used_opts_for_command("msastats"));
+    assert!(check_used_opts(false).is_empty());
+
+    reset_cmd_opt_state();
+    my_cmd_line(&[
+        "muscle".to_string(),
+        "-msastats".to_string(),
+        "in.fa".to_string(),
+        "-output".to_string(),
+        "out.fa".to_string(),
+    ]);
+    set_cmd_opt_used("msastats");
+    set_cmd_opts_used(app_dispatch_used_opts_for_command("msastats"));
+    let msastats_unused = check_used_opts(false);
+    assert!(
+        msastats_unused
+            .iter()
+            .any(|warning| warning.contains("Option -output not used"))
+    );
+
+    reset_cmd_opt_state();
+    my_cmd_line(&[
+        "muscle".to_string(),
+        "-qscore".to_string(),
+        "test.fa".to_string(),
+        "-ref".to_string(),
+        "ref.fa".to_string(),
+    ]);
+    set_cmd_opt_used("qscore");
+    set_cmd_opts_used(app_dispatch_used_opts_for_command("qscore"));
+    assert!(check_used_opts(false).is_empty());
+
+    reset_cmd_opt_state();
+    my_cmd_line(&[
+        "muscle".to_string(),
+        "-qscore".to_string(),
+        "test.fa".to_string(),
+        "-ref".to_string(),
+        "ref.fa".to_string(),
+        "-output".to_string(),
+        "out.fa".to_string(),
+    ]);
+    set_cmd_opt_used("qscore");
+    set_cmd_opts_used(app_dispatch_used_opts_for_command("qscore"));
+    let qscore_unused = check_used_opts(false);
+    assert!(
+        qscore_unused
+            .iter()
+            .any(|warning| warning.contains("Option -output not used"))
+    );
+    assert!(
+        parsed_unused_warnings
+            .iter()
+            .any(|warning| warning.contains("Option -output not used"))
+    );
+    reset_cmd_opt_state();
     std::fs::remove_file(&args_file).unwrap();
+    G_ARGV.lock().unwrap().clear();
+    let my_cmd_line_err =
+        std::panic::catch_unwind(|| my_cmd_line(&["muscle".to_string(), "input.fa".to_string()]))
+            .unwrap_err();
+    let my_cmd_line_err = my_cmd_line_err
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| my_cmd_line_err.downcast_ref::<&str>().copied())
+        .unwrap();
+    assert_eq!(
+        my_cmd_line_err,
+        "\n\nInvalid command line\nExpected -option_name or --option_name, got 'input.fa'\n\n"
+    );
+    let my_cmd_line_err = std::panic::catch_unwind(|| {
+        my_cmd_line(&[
+            "muscle".to_string(),
+            "-unknown".to_string(),
+            "x".to_string(),
+        ])
+    })
+    .unwrap_err();
+    let my_cmd_line_err = my_cmd_line_err
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| my_cmd_line_err.downcast_ref::<&str>().copied())
+        .unwrap();
+    assert_eq!(
+        my_cmd_line_err,
+        "\n\nInvalid command line\nUnknown option unknown\n\n"
+    );
+    let my_cmd_line_err =
+        std::panic::catch_unwind(|| my_cmd_line(&["muscle".to_string(), "-threads".to_string()]))
+            .unwrap_err();
+    let my_cmd_line_err = my_cmd_line_err
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| my_cmd_line_err.downcast_ref::<&str>().copied())
+        .unwrap();
+    assert_eq!(
+        my_cmd_line_err,
+        "\n\nInvalid command line\nInvalid option or missing value -threads\n\n"
+    );
     G_ARGV.lock().unwrap().clear();
 
     let strings_out_file = std::env::temp_dir().join(format!(
@@ -1596,7 +2171,39 @@ fn float_helpers_match_cpp_intent() {
         .or_else(|| cmd_line_err.downcast_ref::<&str>().copied())
         .unwrap();
     assert_eq!(cmd_line_err, "\n\nInvalid command line\nbad flag\n\n");
+    let die_log_file =
+        std::env::temp_dir().join(format!("muscle_rs_die_log_{}.txt", std::process::id()));
+    {
+        let mut argv = G_ARGV.lock().unwrap();
+        argv.clear();
+        argv.push("muscle".to_string());
+        argv.push("-bad".to_string());
+    }
+    set_log_file_name(die_log_file.to_str().unwrap());
+    let die_text = std::panic::catch_unwind(|| die("fatal probe")).unwrap_err();
+    set_log_file_name("");
+    let die_text = die_text
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| die_text.downcast_ref::<&str>().copied())
+        .unwrap();
+    assert_eq!(die_text, "\n---Fatal error---\nfatal probe");
+    let die_log_text = std::fs::read_to_string(&die_log_file).unwrap();
+    assert!(die_log_text.contains("muscle -bad"));
+    assert!(die_log_text.contains("Elapsed time: "));
+    assert!(die_log_text.ends_with("\n---Fatal error---\nfatal probe\n"));
+    std::fs::remove_file(&die_log_file).unwrap();
+    G_ARGV.lock().unwrap().clear();
+    let malloc_probe_log =
+        std::env::temp_dir().join(format!("muscle_rs_test_malloc_{}.log", std::process::id()));
+    set_log_file_name(malloc_probe_log.to_str().unwrap());
     assert_eq!(test_l3(16), "     16.0b  ok\n");
+    set_log_file_name("");
+    assert_eq!(
+        std::fs::read_to_string(&malloc_probe_log).unwrap(),
+        "     16.0b  ok\n"
+    );
+    std::fs::remove_file(&malloc_probe_log).unwrap();
     let malloc_log = cmd_test_malloc();
     assert_eq!(malloc_log.lines().count(), 9);
     assert!(malloc_log.contains("18.4Gb"));
@@ -1919,7 +2526,13 @@ fn text_file_character_and_generic_token_reads_match_cpp_state() {
     assert_eq!(read_stdio_file_no_fail(&mut f, 3), b"cde");
     assert_eq!(get_stdio_file_pos64(&mut f), 5);
     assert_eq!(read_stdio_file_l395(&mut f, 1, 2), b"bc");
-    assert_eq!(read_stdio_file64_l408(&mut f, 3, 2), b"de");
+    assert_eq!(read_stdio_file64_l408(&mut f, 3, 1), b"d");
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            read_stdio_file64_l408(&mut f, 3, 2);
+        }))
+        .is_err()
+    );
     set_stdio_file_pos64(&mut f, 4);
     assert_eq!(read_stdio_file_l423(&mut f, 2), b"ef");
     set_stdio_file_pos64(&mut f, 0);
@@ -1927,11 +2540,46 @@ fn text_file_character_and_generic_token_reads_match_cpp_state() {
     set_stdio_file_pos64(&mut f, 2);
     assert_eq!(read_all_stdio_file(&mut f), b"abcdef");
     assert_eq!(get_stdio_file_pos64(&mut f), 2);
-    assert_eq!(read_all_stdio_file64_l476(&mut f), b"abcdef");
-    assert_eq!(get_stdio_file_pos64(&mut f), 2);
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            read_all_stdio_file64_l476(&mut f);
+        }))
+        .is_err()
+    );
     drop(f);
-    assert_eq!(read_all_stdio_file64_l463(stdio_name), b"abcdef");
+    assert!(std::panic::catch_unwind(|| read_all_stdio_file64_l463(stdio_name)).is_err());
     assert_eq!(read_all_stdio_file32(stdio_name), b"abcdef");
+
+    let one_byte_stdio = std::env::temp_dir().join(format!(
+        "muscle_rs_stdio_one_byte_{}.txt",
+        std::process::id()
+    ));
+    std::fs::write(&one_byte_stdio, b"z").unwrap();
+    let one_byte_name = one_byte_stdio.to_str().unwrap();
+    let mut one_byte = open_stdio_file(one_byte_name);
+    set_stdio_file_pos64(&mut one_byte, 1);
+    assert_eq!(read_all_stdio_file64_l476(&mut one_byte), b"z");
+    assert_eq!(get_stdio_file_pos64(&mut one_byte), 1);
+    drop(one_byte);
+    assert_eq!(read_all_stdio_file64_l463(one_byte_name), b"z");
+
+    let sparse_stdio =
+        std::env::temp_dir().join(format!("muscle_rs_stdio_sparse_{}.bin", std::process::id()));
+    {
+        let mut sparse = std::fs::File::create(&sparse_stdio).unwrap();
+        std::io::Write::write_all(&mut sparse, b"xyz").unwrap();
+        sparse.set_len(uint32::MAX as u64 + 4).unwrap();
+    }
+    let sparse_name = sparse_stdio.to_str().unwrap();
+    let mut sparse = open_stdio_file(sparse_name);
+    assert_eq!(get_stdio_file_size32(&mut sparse), 3);
+    set_stdio_file_pos64(&mut sparse, 1);
+    assert_eq!(read_all_stdio_file(&mut sparse), b"xyz");
+    assert_eq!(get_stdio_file_pos64(&mut sparse), 1);
+    drop(sparse);
+    assert_eq!(read_all_stdio_file32(sparse_name), b"xyz");
+    std::fs::remove_file(&one_byte_stdio).unwrap();
+    std::fs::remove_file(&sparse_stdio).unwrap();
 
     let stdio_out =
         std::env::temp_dir().join(format!("muscle_rs_stdio_out_{}.txt", std::process::id()));
@@ -1957,31 +2605,45 @@ fn text_file_character_and_generic_token_reads_match_cpp_state() {
         "  0.1% Reading"
     );
     set_stdio_file_pos64(&mut lines, 8);
-    assert_eq!(
-        progress_file_step(&mut lines, Some("Still reading")),
-        Some(" 61.5% Still reading".to_string())
-    );
-    assert_eq!(get_progress_level_str(), " 61.5% Still reading");
+    let _ = progress_file_step(&mut lines, Some("Still reading"));
     assert_eq!(progress_file_step(&mut lines, None), None);
     assert_eq!(progress_file_done(Some("Done")), "100.0% Done");
     assert_eq!(
         progress_step(0, 10, "Step"),
         Some(" 10.0% Step".to_string())
     );
+    assert_eq!(progress_step(4, 10, "Step"), None);
     assert_eq!(
-        progress_step(4, 10, "Step"),
-        Some(" 50.0% Step".to_string())
+        progress_step(9, 10, "Step"),
+        Some("100.0% Step".to_string())
     );
     assert_eq!(
         progress_step64(0, 10, "Big"),
         Some("  0.1% Big".to_string())
     );
+    assert_eq!(progress_step64(5, 10, "Big"), None);
     assert_eq!(
-        progress_step64(5, 10, "Big"),
-        Some(" 50.0% Big".to_string())
+        progress_step64(9, 10, "Big"),
+        Some("100.0% Big".to_string())
     );
+    assert_eq!(
+        progress_step(0, uint::MAX, "Open"),
+        Some("0 Open".to_string())
+    );
+    assert_eq!(
+        progress_step(uint::MAX, uint::MAX, "OpenDone"),
+        Some("100% OpenDone".to_string())
+    );
+    assert_eq!(get_progress_level_str(), "100% OpenDone");
     assert_eq!(progress_callback(0, 4), "  25.0% Processing");
     assert_eq!(progress_callback(3, 4), " 100.0% Processing");
+    fn custom_progress_text() -> &'static str {
+        "Custom"
+    }
+    set_pcb(custom_progress_text);
+    assert_eq!(progress_callback(0, 2), "  50.0% Custom");
+    reset_pcb();
+    assert_eq!(progress_callback(0, 2), "  50.0% Processing");
     set_stdio_file_pos64(&mut lines, 0);
     assert_eq!(
         read_line_stdio_file_l605(&mut lines, 16),
@@ -2162,6 +2824,11 @@ fn random_generator_matches_cpp_sequence() {
     assert_eq!(dist[2][0], dist[0][2]);
     assert_eq!(dist[2][1], dist[1][2]);
     assert!((dist[1][0] - 0.551).abs() < 1e-6);
+
+    reset_rand(1);
+    let mut dist_into = vec![vec![9.0, 9.0, 9.0, 9.0]];
+    get_random_dist_mx_into(3, &mut dist_into);
+    assert_eq!(dist_into, dist);
 }
 
 #[test]
@@ -2269,7 +2936,7 @@ fn pair_generation_matches_cpp_ordering() {
     multi_sequence_from_strings(
         &mut mfa,
         &["a".to_string(), "b".to_string()],
-        &["AC".to_string(), "AG".to_string()],
+        &["AC".to_string(), "AGG".to_string()],
     );
     let mfa_pair_dist = get_prot_dist_pair_from_mfa(
         &mfa,
@@ -2277,6 +2944,8 @@ fn pair_generation_matches_cpp_ordering() {
         1,
         |seqi, li, seqj, lj| {
             assert_eq!(&seqi[..li as usize], b"AC");
+            // C++ muscle/src/protdistpair.cpp passes Li as the second length.
+            assert_eq!(lj, li);
             assert_eq!(&seqj[..lj as usize], b"AG");
             PathInfo {
                 path: "BB".to_string(),
@@ -2436,6 +3105,105 @@ fn pair_generation_matches_cpp_ordering() {
 }
 
 #[test]
+fn threaded_searchpd_and_protdists_merge_output_deterministically() {
+    let protdists_in = std::env::temp_dir().join(format!(
+        "muscle_rs_protdists_threaded_{}.fa",
+        std::process::id()
+    ));
+    let protdists_out = std::env::temp_dir().join(format!(
+        "muscle_rs_protdists_threaded_{}.tsv",
+        std::process::id()
+    ));
+    std::fs::write(
+        &protdists_in,
+        b">pd_a\nEFIL\n>pd_b\nEFKL\n>pd_c\nPQRS\n>pd_d\nWYVV\n",
+    )
+    .unwrap();
+    let protdists_serial = cmd_protdists_threaded(protdists_in.to_str().unwrap(), "", Some(1));
+    let protdists_parallel = cmd_protdists_threaded(
+        protdists_in.to_str().unwrap(),
+        protdists_out.to_str().unwrap(),
+        Some(2),
+    );
+    assert_eq!(protdists_parallel, protdists_serial);
+    assert_eq!(
+        std::fs::read_to_string(&protdists_out).unwrap(),
+        protdists_parallel
+    );
+    let protdist_rows: Vec<&str> = protdists_parallel.lines().collect();
+    assert_eq!(protdist_rows.len(), 6);
+    assert!(protdist_rows[0].starts_with("pd_b\tpd_a\t"));
+    assert!(protdist_rows[5].starts_with("pd_d\tpd_c\t"));
+    std::fs::remove_file(&protdists_in).unwrap();
+    std::fs::remove_file(&protdists_out).unwrap();
+
+    let search_query = std::env::temp_dir().join(format!(
+        "muscle_rs_searchpd_threaded_query_{}.fa",
+        std::process::id()
+    ));
+    let search_db = std::env::temp_dir().join(format!(
+        "muscle_rs_searchpd_threaded_db_{}.fa",
+        std::process::id()
+    ));
+    let search_out = std::env::temp_dir().join(format!(
+        "muscle_rs_searchpd_threaded_{}.tsv",
+        std::process::id()
+    ));
+    std::fs::write(&search_query, b">q1\nEFIL\n>q2\nPQRS\n>q3\nWYVV\n").unwrap();
+    std::fs::write(&search_db, b">d1\nEFKL\n>d2\nPQRS\n>d3\nWYVV\n").unwrap();
+    let search_serial = cmd_searchpd_threaded(
+        search_query.to_str().unwrap(),
+        search_db.to_str().unwrap(),
+        10.0,
+        "",
+        Some(1),
+    );
+    let search_parallel = cmd_searchpd_threaded(
+        search_query.to_str().unwrap(),
+        search_db.to_str().unwrap(),
+        10.0,
+        search_out.to_str().unwrap(),
+        Some(2),
+    );
+    assert_eq!(search_parallel, search_serial);
+    assert_eq!(
+        std::fs::read_to_string(&search_out).unwrap(),
+        search_parallel
+    );
+    let search_rows: Vec<&str> = search_parallel.lines().collect();
+    assert!(!search_rows.is_empty());
+    assert!(search_rows[0].starts_with("q1\t"));
+    assert!(search_rows.iter().any(|row| row.starts_with("q2\t")));
+
+    let search_literal = cmd_searchpd_cpp_literal_with_pair_schedule(
+        search_query.to_str().unwrap(),
+        search_db.to_str().unwrap(),
+        10.0,
+        "",
+        &[(2, 0), (2, 1), (2, 2), (0, 0), (0, 1), (0, 2)],
+        |seqi, li, seqj, lj| {
+            assert_eq!(li as usize, seqi.len());
+            assert_eq!(lj as usize, seqj.len());
+            PathInfo {
+                path: "BBBB".to_string(),
+                ..PathInfo::default()
+            }
+        },
+        |row_x, row_y, col_count| {
+            assert_eq!(col_count, 4);
+            if row_x == row_y { 0.0 } else { 1.0 }
+        },
+    );
+    let literal_rows: Vec<&str> = search_literal.lines().collect();
+    assert!(literal_rows[0].starts_with("q3\t"));
+    assert!(literal_rows.iter().any(|row| row.starts_with("q1\t")));
+
+    std::fs::remove_file(&search_query).unwrap();
+    std::fs::remove_file(&search_db).unwrap();
+    std::fs::remove_file(&search_out).unwrap();
+}
+
+#[test]
 fn quartile_helpers_match_cpp_indexing() {
     let q = get_quarts(&[10, 1, 5, 3, 9]);
     assert_eq!(q.min, 1);
@@ -2563,6 +3331,20 @@ fn trans_aln_paths_and_extensions_match_cpp_state_machine() {
         trans_aln_log_m_path_aln(&ta, 1, true),
         "\nMiMM\nA.GC  [M] >m2\n"
     );
+    let trans_diag_log = std::env::temp_dir().join(format!(
+        "muscle_rs_transaln_diag_{}.log",
+        std::process::id()
+    ));
+    set_log_file_name(trans_diag_log.to_str().unwrap());
+    let tpath2_log = trans_aln_log_t_path2_aln(&ta, 1, true);
+    let log_me = trans_aln_log_me(&ta);
+    set_log_file_name("");
+    let trans_diag_text = std::fs::read_to_string(&trans_diag_log).unwrap();
+    assert!(trans_diag_text.starts_with(&tpath2_log));
+    assert!(trans_diag_text.ends_with(&log_me));
+    assert!(trans_diag_text.contains("Pair-wise alignments:\n"));
+    assert!(trans_diag_text.contains("MPath\nMiMM\n"));
+    std::fs::remove_file(&trans_diag_log).unwrap();
 
     let trans_input =
         std::env::temp_dir().join(format!("muscle_rs_transaln_in_{}.fa", std::process::id()));
@@ -2619,6 +3401,11 @@ fn trans_aln_paths_and_extensions_match_cpp_state_machine() {
         std::process::id()
     ));
     std::fs::write(&trans_refadd, b">f1\nATC\n").unwrap();
+    let trans_ref_log_file = std::env::temp_dir().join(format!(
+        "muscle_rs_transalnref_log_{}.txt",
+        std::process::id()
+    ));
+    set_log_file_name(trans_ref_log_file.to_str().unwrap());
     let mut trans_ref_calls = Vec::new();
     let (ref_ta, ref_extended, ref_log) = cmd_transalnref(
         trans_ref.to_str().unwrap(),
@@ -2640,6 +3427,7 @@ fn trans_aln_paths_and_extensions_match_cpp_state_machine() {
             }
         },
     );
+    set_log_file_name("");
     assert_eq!(trans_ref_calls, vec![("AC".to_string(), "ATC".to_string())]);
     assert_eq!(ref_ta.fresh_index_to_msa_index, vec![0]);
     assert_eq!(ref_ta.pw_paths, vec!["BXB".to_string()]);
@@ -2656,9 +3444,14 @@ fn trans_aln_paths_and_extensions_match_cpp_state_machine() {
         ">m1\nA--C\n>m2\nA-GC\n>f1\nAT-C\n"
     );
     assert_eq!(ref_log, "ref m1, add f1 (66.7% id)\nDone.\n");
+    let trans_ref_global_log = std::fs::read_to_string(&trans_ref_log_file).unwrap();
+    assert!(trans_ref_global_log.contains("    1 A-C 2"));
+    assert!(trans_ref_global_log.contains("    1 ATC 3"));
+    assert!(trans_ref_global_log.ends_with(&ref_log));
     std::fs::remove_file(&trans_ref).unwrap();
     std::fs::remove_file(&trans_refadd).unwrap();
     std::fs::remove_file(&trans_refout).unwrap();
+    std::fs::remove_file(&trans_ref_log_file).unwrap();
 }
 
 #[test]
@@ -2695,6 +3488,40 @@ fn sw_tester_fix_gaps_and_stats_match_cpp_helpers() {
         sw_tester_stats(&swt),
         "\n         7  Tests\n         5  Agree\n         1  Score diff\n         2  Path diff\n         3  Pos diff\n         4  PS score ok\n         6  PS score diff\n"
     );
+    let mut clear_stats = SWTester {
+        n: 7,
+        n_agree: 5,
+        n_score_diff: 1,
+        n_path_diff: 2,
+        n_pos_diff: 3,
+        n_ps_score_ok: 4,
+        n_ps_score_diff: 6,
+        a: "keep-a".to_string(),
+        b: "keep-b".to_string(),
+        x_score: 1.25,
+        y_score: 2.5,
+        x_lo_a: 8,
+        y_lo_a: 9,
+        x_lo_b: 10,
+        y_lo_b: 11,
+        x_path: "MB".to_string(),
+        y_path: "MI".to_string(),
+        ..SWTester::default()
+    };
+    sw_tester_clear_stats(&mut clear_stats);
+    assert_eq!(clear_stats.n, 0);
+    assert_eq!(clear_stats.n_agree, 0);
+    assert_eq!(clear_stats.n_score_diff, 0);
+    assert_eq!(clear_stats.n_path_diff, 0);
+    assert_eq!(clear_stats.n_pos_diff, 0);
+    assert_eq!(clear_stats.n_ps_score_ok, 0);
+    assert_eq!(clear_stats.n_ps_score_diff, 0);
+    assert_eq!(clear_stats.a, "keep-a");
+    assert_eq!(clear_stats.b, "keep-b");
+    assert_eq!(clear_stats.x_score, 1.25);
+    assert_eq!(clear_stats.y_score, 2.5);
+    assert_eq!(clear_stats.x_path, "MB");
+    assert_eq!(clear_stats.y_path, "MI");
 
     let mut runx = SWTester::default();
     sw_tester_run_x(
@@ -2802,6 +3629,10 @@ fn sw_tester_fix_gaps_and_stats_match_cpp_helpers() {
     let mut diff = SWTester {
         a: "ABC".to_string(),
         b: "ABD".to_string(),
+        x: Some(SWer::default()),
+        y: Some(SWer::default()),
+        x_name: "XConcrete".to_string(),
+        y_name: "YConcrete".to_string(),
         x_score: 4.0,
         y_score: 3.0,
         x_lo_a: 1,
@@ -2813,7 +3644,7 @@ fn sw_tester_fix_gaps_and_stats_match_cpp_helpers() {
         ..SWTester::default()
     };
     let log = sw_tester_cmp_xy(&mut diff).unwrap();
-    assert!(log.starts_with("@SCOREDIFF"));
+    assert!(log.starts_with("@SCOREDIFF XConcrete YConcrete\n"));
     assert!(log.contains("A: ABC\nB: ABD\n"));
     assert!(log.contains("  4/3  loa 1,2  lob 0,0  MB,MI\n"));
     assert_eq!(diff.n, 1);
@@ -2975,23 +3806,35 @@ fn sw_tester_fix_gaps_and_stats_match_cpp_helpers() {
     assert_eq!(random_msa_iter_tester.n_agree, 2);
 
     let bug_log = bug_l13();
-    assert!(bug_log.contains("         X  SWer\n         Y  SWer\n"));
-    assert!(bug_log.contains("         1  Tests\n"));
-    assert!(bug_log.contains("         1  Agree\n"));
+    assert!(bug_log.contains("\nRunXAB(Simple_MASM_Mega)\n"));
+    assert!(bug_log.contains("\nRunXAB(Fast_Seqs_AA_BLOSUM62)\n"));
+    assert!(bug_log.contains("A EVRDYIQ\nB RQGEG\n"));
+    assert!(bug_log.contains("ScoreSW 3.58, ScorePS 3.58   MDDDM\n"));
 
     let bug_mm_log = bug_swtestmm_l13();
-    assert!(bug_mm_log.contains("         X  SWer\n         Y  SWer\n"));
-    assert!(bug_mm_log.contains("         1  Tests\n"));
-    assert!(bug_mm_log.contains("         1  Agree\n"));
+    assert!(bug_mm_log.contains("\nRunXAB(Enum_MASM_Mega)\n"));
+    assert!(bug_mm_log.contains("\nRunXAB(Simple_MASM_Mega)\n"));
+    assert!(bug_mm_log.contains("A VDA|KMY|STN\nB MHS\n"));
+    assert!(bug_mm_log.contains("ScoreSW 0.386, ScorePS 0.386   MM\n"));
+
+    reset_rand(1);
+    let test_seqs_log = test_seqs();
+    assert!(test_seqs_log.contains("      1000  Tests\n"));
+    assert!(test_seqs_log.contains("      1000  Agree\n"));
+    assert!(test_seqs_log.contains("         X  Simple_MASM_Mega\n"));
+    assert!(test_seqs_log.contains("         Y  MASM_Mega_Seqs\n"));
+    assert!(test_seqs_log.contains("         0  Score diff\n"));
 
     assert_eq!(
         cmd_swtest(),
-        "\n         X  SWer\n         Y  SWer\n         1  Tests\n         1  Agree\n         0  Score diff\n         0  Path diff\n         0  Pos diff\n         1  PS score ok\n         0  PS score diff\n"
+        "\n         X  Fast_Seqs_AA_BLOSUM62\n         Y  PS\n         1  Tests\n         1  Agree\n         0  Score diff\n         0  Path diff\n         0  Pos diff\n         1  PS score ok\n         0  PS score diff\n"
     );
     reset_rand(1);
     let swtestmm_log = cmd_swtestmm();
     assert!(swtestmm_log.contains("      1000  Tests\n"));
     assert!(swtestmm_log.contains("      1000  Agree\n"));
+    assert!(swtestmm_log.contains("         X  Enum_MASM_Mega\n"));
+    assert!(swtestmm_log.contains("         Y  Simple_MASM_Mega\n"));
     assert!(swtestmm_log.contains("         0  Score diff\n"));
 }
 
@@ -3010,13 +3853,35 @@ fn platform_helpers_have_cpp_shape() {
     assert_eq!(cmd_build_guide_tree(), "");
     let mut io_buffer = alloc_buffer();
     assert_eq!(io_buffer.len(), 32_000);
+    let original_capacity = io_buffer.capacity();
     free_buffer(&mut io_buffer);
-    assert!(io_buffer.is_empty());
-    set_pcb();
+    assert_eq!(io_buffer.len(), 32_000);
+    assert_eq!(io_buffer.capacity(), original_capacity);
+    #[cfg(unix)]
+    unsafe {
+        let file = tmpfile();
+        assert!(!file.is_null());
+        assert_eq!(alloc_buffer_cpp_literal(file), 0);
+        assert_eq!(alloc_buffer_cpp_literal(file), 0);
+        assert_eq!(fclose(file), 0);
+    }
+    reset_pcb();
     mysleep_l952(0);
     mysleep_l957(0);
     assert!(!get_platform().is_empty());
     assert!(!myisatty(-1));
+    assert_eq!(
+        myisatty(0),
+        std::io::IsTerminal::is_terminal(&std::io::stdin())
+    );
+    assert_eq!(
+        myisatty(1),
+        std::io::IsTerminal::is_terminal(&std::io::stdout())
+    );
+    assert_eq!(
+        myisatty(2),
+        std::io::IsTerminal::is_terminal(&std::io::stderr())
+    );
     assert_eq!(get_struct_pack(), 1);
     assert!(get_cpu_core_count() >= 1);
     assert!(get_requested_thread_count() >= 1);
@@ -3024,10 +3889,17 @@ fn platform_helpers_have_cpp_shape() {
     assert!(get_phys_mem_bytes_l979() >= 0.0);
     assert!(get_phys_mem_bytes_l990() >= 0.0);
     assert!(get_phys_mem_bytes_l1079() >= 0.0);
-    assert!(get_mem_use_bytes_l964() >= 0.0);
-    assert!(get_mem_use_bytes_l1008() >= 0.0);
-    assert!(get_mem_use_bytes_l1060() >= 0.0);
+    let peak_before_mem_probes = get_peak_mem_use_bytes();
+    let win_mem = get_mem_use_bytes_l964();
+    let linux_mem = get_mem_use_bytes_l1008();
+    let mac_mem = get_mem_use_bytes_l1060();
+    assert!(win_mem >= 0.0);
+    assert!(linux_mem >= 0.0);
+    assert!(mac_mem >= 0.0);
+    assert!(get_peak_mem_use_bytes() >= peak_before_mem_probes);
+    let peak_before_fallback = get_peak_mem_use_bytes();
     assert_eq!(get_mem_use_bytes_l1089(), 0.0);
+    assert_eq!(get_peak_mem_use_bytes(), peak_before_fallback);
     assert_eq!(get_size_from_str("file.cpp:12=123.5"), 123.5);
     assert_eq!(get_size_from_str("7.25"), 7.25);
     assert_eq!(get_size_from_str("x=12.5kb"), 12.5);
@@ -3052,6 +3924,17 @@ fn platform_helpers_have_cpp_shape() {
     assert_eq!(gtb_mem.max_la, 0);
     assert_eq!(gtb_mem.max_lb, 0);
     assert!(gtb_mem.tb_bit.is_empty());
+    with_dp_mem_l18(|mem| {
+        mem.max_la = 17;
+        mem.max_lb = 19;
+    });
+    let gtb_mem = get_dp_mem_l18();
+    assert_eq!(gtb_mem.max_la, 17);
+    assert_eq!(gtb_mem.max_lb, 19);
+    with_dp_mem_l18(|mem| {
+        mem.max_la = 0;
+        mem.max_lb = 0;
+    });
     let uclustpd_mem = get_dp_mem_l17();
     assert_eq!(uclustpd_mem.max_la, 0);
     assert_eq!(uclustpd_mem.max_lb, 0);
@@ -3454,6 +4337,7 @@ fn original_cpp_binary_matches_rust_on_stable_real_data_commands() {
     let squeezed = cmd_squeeze_inserts(
         "muscle/test_data/ref_alns/BB11001",
         rust_squeeze.to_str().unwrap(),
+        None,
     );
     assert_eq!(squeezed.seqs.len(), 4);
     assert_eq!(
@@ -4261,6 +5145,7 @@ fn original_cpp_binary_matches_rust_on_stable_real_data_commands() {
     let subst_list = root.join("subst_list.txt");
     let cpp_subst = root.join("cpp.subst.tsv");
     let rust_subst = root.join("rust.subst.tsv");
+    let rust_cli_subst = root.join("rust_cli.subst.tsv");
     std::fs::write(
         &subst_msa,
         format!(">s1\n{AMINO_ALPHA}\n>s2\n{AMINO_ALPHA}\n"),
@@ -4299,6 +5184,27 @@ fn original_cpp_binary_matches_rust_on_stable_real_data_commands() {
     assert!(subst_log.contains("Score matrix"));
     assert_eq!(
         std::fs::read_to_string(&rust_subst).unwrap(),
+        std::fs::read_to_string(&cpp_subst).unwrap()
+    );
+    let rust_subst_cli = run_rust_cli(&[
+        "-make_substmx",
+        subst_list.to_str().unwrap(),
+        "-output",
+        rust_cli_subst.to_str().unwrap(),
+        "-label",
+        "TESTMX",
+        "-minpctid",
+        "100",
+        "-maxpctid",
+        "100",
+        "-quiet",
+    ]);
+    assert!(
+        rust_subst_cli.stdout.is_empty(),
+        "make_substmx CLI diagnostics should go through Log, not stdout"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&rust_cli_subst).unwrap(),
         std::fs::read_to_string(&cpp_subst).unwrap()
     );
     std::fs::remove_dir_all(root).unwrap();
@@ -4361,6 +5267,66 @@ fn clap_command_fields_are_counted_and_dispatched_exhaustively() {
         }
     }
     assert_eq!(dispatched_fields, command_fields);
+
+    let selected_start = source.find("fn selected_command_opt").unwrap();
+    let selected_end = source[selected_start..]
+        .find("/// CLI entry point")
+        .map(|offset| selected_start + offset)
+        .unwrap();
+    let selected_block = &source[selected_start..selected_end];
+    let mut selected_fields = std::collections::BTreeSet::<String>::new();
+    for field in &command_fields {
+        if selected_block.contains(&format!("{field},")) {
+            selected_fields.insert(field.clone());
+        }
+    }
+    assert_eq!(selected_fields, command_fields);
+
+    let used_table_start = source
+        .find("pub fn app_dispatch_used_opts_for_command")
+        .unwrap();
+    let used_table_end = source[used_table_start..]
+        .find("#[track_caller]\nfn mark_app_dispatch_used_opts")
+        .map(|offset| used_table_start + offset)
+        .unwrap();
+    let used_table_block = &source[used_table_start..used_table_end];
+    let mut table_fields = std::collections::BTreeSet::<String>::new();
+    for line in used_table_block.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix('"') {
+            if let Some((name, rest)) = rest.split_once('"') {
+                if rest.trim_start().starts_with("=>") {
+                    table_fields.insert(name.to_string());
+                }
+            }
+        }
+    }
+    assert_eq!(table_fields, command_fields);
+}
+
+#[test]
+fn translated_myopts_cover_original_command_table() {
+    let cmds_h = include_str!("../muscle/src/cmds.h");
+    let mut cpp_commands = std::collections::BTreeSet::<String>::new();
+    for line in cmds_h.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("C(") {
+            if let Some((name, _)) = rest.split_once(')') {
+                cpp_commands.insert(name.to_string());
+            }
+        }
+    }
+
+    let translated_str_opts = STR_OPT_NAMES
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    let missing = cpp_commands
+        .iter()
+        .filter(|name| !translated_str_opts.contains(name.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(missing, Vec::<String>::new());
 }
 
 #[test]
@@ -4483,6 +5449,7 @@ fn enum_grid_and_path_helpers_match_cpp_order() {
 
 #[test]
 fn object_type_string_helpers_match_cpp_tables() {
+    let _global_guard = GLOBAL_STATE_TEST_LOCK.lock().unwrap();
     assert_eq!(obj_type_to_str(ObjType::OT_SeqInfo), "SeqInfo");
     assert_eq!(obj_type_to_str(ObjType::OT_PathInfo), "PathInfo");
     assert_eq!(obj_type_to_str(ObjType::OTCount), "OT_??");
@@ -4513,12 +5480,108 @@ fn object_type_string_helpers_match_cpp_tables() {
     obj_mgr_validate();
     obj_mgr_update_global_stats();
     obj_mgr_thread_update_global_stats();
+    let obj_log_file = std::env::temp_dir().join(format!(
+        "muscle_rs_obj_mgr_global_stats_{}.log",
+        std::process::id()
+    ));
+    set_log_file_name(obj_log_file.to_str().unwrap());
     let log = obj_mgr_log_global_stats();
+    set_log_file_name("");
     assert!(log.contains("Type        Busy        Free"));
     assert!(log.contains("SeqInfo"));
     assert!(log.contains("PathInfo"));
+    assert_eq!(std::fs::read_to_string(&obj_log_file).unwrap(), log);
     let mgr = obj_mgr_get_obj_mgr();
     assert!(mgr.busy.contains_key(&ObjType::OT_SeqInfo));
+}
+
+#[test]
+fn obj_mgr_ref_count_lifecycle_updates_busy_stats() {
+    let _global_guard = GLOBAL_STATE_TEST_LOCK.lock().unwrap();
+
+    let mut first = obj_mgr_thread_get_obj(ObjType::OT_PathInfo);
+    let mut second = obj_mgr_thread_get_obj(ObjType::OT_PathInfo);
+    assert_eq!(first.ref_count, 1);
+    assert_eq!(second.ref_count, 1);
+
+    obj_mgr_up(&mut first);
+    obj_mgr_up(&mut first);
+    assert_eq!(first.ref_count, 3);
+    assert!(obj_mgr_get_busy_count(ObjType::OT_PathInfo) >= 2);
+    assert!(obj_mgr_get_max_ref_count(ObjType::OT_PathInfo) >= 3);
+
+    obj_mgr_down(&mut first);
+    assert_eq!(first.ref_count, 2);
+    assert!(obj_mgr_get_max_ref_count(ObjType::OT_PathInfo) >= 2);
+
+    obj_mgr_down(&mut second);
+    assert_eq!(second.ref_count, 0);
+    obj_mgr_validate();
+
+    obj_mgr_down(&mut first);
+    obj_mgr_down(&mut first);
+    assert_eq!(first.ref_count, 0);
+    obj_mgr_validate();
+}
+
+#[test]
+fn obj_mgr_cpp_literal_sidecar_matches_pointer_lists() {
+    let _global_guard = GLOBAL_STATE_TEST_LOCK.lock().unwrap();
+
+    let mut runtime = CppObjMgrRuntime::new();
+    {
+        let mgr = obj_mgr_cpp_literal_get_obj_mgr(&mut runtime);
+        let first = mgr.thread_get_obj(ObjType::OT_SeqInfo);
+        assert_eq!(mgr.busy_head(ObjType::OT_SeqInfo), Some(first));
+        assert_eq!(mgr.object(first).ref_count, 1);
+        assert_eq!(mgr.object(first).fwd, None);
+        assert_eq!(mgr.object(first).bwd, None);
+    }
+    assert_eq!(runtime.thread_count(), 32);
+    assert!(runtime.manager_exists(0));
+
+    {
+        let mgr = runtime.manager_mut(0).unwrap();
+        let second = mgr.thread_get_obj(ObjType::OT_SeqInfo);
+        let first = mgr.object(second).fwd.unwrap();
+        assert_eq!(mgr.busy_head(ObjType::OT_SeqInfo), Some(second));
+        assert_eq!(mgr.object(first).bwd, Some(second));
+
+        mgr.object_mut(second).mem_bytes = 17;
+        mgr.object_mut(first).mem_bytes = 25;
+        assert_eq!(mgr.get_total_mem(ObjType::OT_SeqInfo), 42.0);
+        mgr.validate_type(ObjType::OT_SeqInfo);
+
+        mgr.object_mut(second).ref_count = 0;
+        mgr.free_obj(second);
+        assert_eq!(mgr.free_head(ObjType::OT_SeqInfo), Some(second));
+        assert_eq!(mgr.busy_head(ObjType::OT_SeqInfo), Some(first));
+        assert_eq!(mgr.object(first).bwd, None);
+        mgr.validate_type(ObjType::OT_SeqInfo);
+
+        let recycled = mgr.thread_get_obj(ObjType::OT_SeqInfo);
+        assert_eq!(recycled, second);
+        assert_eq!(mgr.object(recycled).ref_count, 1);
+        assert_eq!(mgr.object(recycled).bwd, None);
+        assert_eq!(mgr.object(first).bwd, Some(recycled));
+        assert_eq!(mgr.get_total_mem(ObjType::OT_SeqInfo), 42.0);
+
+        let path = mgr.alloc_new(ObjType::OT_PathInfo);
+        assert_eq!(mgr.object(path).type_, ObjType::OT_PathInfo);
+        assert_eq!(mgr.object(path).ref_count, 0);
+        assert_eq!(mgr.object(path).fwd, None);
+        assert_eq!(mgr.object(path).bwd, None);
+
+        let validate_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            mgr.validate();
+        }));
+        assert!(validate_result.is_err());
+    }
+
+    let static_obj = obj_mgr_cpp_literal_static_get_obj(&mut runtime, ObjType::OT_PathInfo);
+    let mgr = runtime.manager_mut(0).unwrap();
+    assert_eq!(mgr.busy_head(ObjType::OT_PathInfo), Some(static_obj));
+    assert_eq!(mgr.object(static_obj).ref_count, 1);
 }
 
 #[test]
@@ -4555,6 +5618,14 @@ fn hmm_path_feature_and_seq_gap_helpers_match_cpp_logic() {
     .iter()
     .map(|s| s.to_string())
     .collect::<Vec<_>>();
+    let empty_hmm = HMMParams::default();
+    assert!(!empty_hmm.logs);
+    assert_eq!(empty_hmm.line_nr, 0);
+    assert_eq!(empty_hmm.var, DEFAULT_PERTURB_VAR);
+    assert!(empty_hmm.trans.is_empty());
+    assert!(empty_hmm.emits.is_empty());
+    assert!(empty_hmm.lines.is_empty());
+    assert!(empty_hmm.alpha.is_empty());
     let hmm = hmm_params_from_strings(&hmm_lines);
     assert_eq!(hmm.alpha, NT_ALPHA);
     assert_eq!(hmm.var, DEFAULT_PERTURB_VAR);
@@ -4562,12 +5633,45 @@ fn hmm_path_feature_and_seq_gap_helpers_match_cpp_logic() {
     hmm_params_assert_probs_valid(&hmm);
     assert!(myfeq(hmm.emits[0][3] as f64, 1.0 / 16.0));
     assert_eq!(hmm_params_get_probs(&hmm), hmm);
+    assert_eq!(hmm_params_from_params(&hmm, true), hmm);
     let scores = hmm_params_get_scores(&hmm);
     assert!(scores.logs);
     assert!(myfeq(
         scores.trans[HMMTRANS::HMMTRANS_IS_M as usize] as f64,
         hmm.trans[HMMTRANS::HMMTRANS_IS_M as usize].ln() as f64
     ));
+    let probs_from_scores = hmm_params_get_probs(&scores);
+    assert!(!probs_from_scores.logs);
+    assert!(myfeq(
+        probs_from_scores.trans[HMMTRANS::HMMTRANS_IS_M as usize] as f64,
+        hmm.trans[HMMTRANS::HMMTRANS_IS_M as usize] as f64
+    ));
+    let scores_from_params = hmm_params_from_params(&hmm, false);
+    assert!(scores_from_params.logs);
+    assert!(myfeq(
+        scores_from_params.trans[HMMTRANS::HMMTRANS_IS_M as usize] as f64,
+        scores.trans[HMMTRANS::HMMTRANS_IS_M as usize] as f64
+    ));
+    let probs_from_params = hmm_params_from_params(&scores, true);
+    assert!(!probs_from_params.logs);
+    assert!(myfeq(
+        probs_from_params.trans[HMMTRANS::HMMTRANS_IS_M as usize] as f64,
+        hmm.trans[HMMTRANS::HMMTRANS_IS_M as usize] as f64
+    ));
+    let cpp_literal_probs = hmm_params_get_probs_cpp_literal(&hmm);
+    assert_eq!(cpp_literal_probs, hmm);
+    let cpp_literal_from_params_true = hmm_params_from_params_cpp_literal(&hmm, true);
+    assert_eq!(cpp_literal_from_params_true, hmm);
+    let cpp_literal_from_params_false = hmm_params_from_params_cpp_literal(&hmm, false);
+    assert_eq!(cpp_literal_from_params_false, hmm);
+    assert!(!cpp_literal_from_params_false.logs);
+    assert!(std::panic::catch_unwind(|| hmm_params_get_probs_cpp_literal(&scores)).is_err());
+    assert!(
+        std::panic::catch_unwind(|| hmm_params_from_params_cpp_literal(&scores, true)).is_err()
+    );
+    assert!(
+        std::panic::catch_unwind(|| hmm_params_from_params_cpp_literal(&scores, false)).is_err()
+    );
     let round_trip = hmm_params_scores_to_probs(&scores);
     assert!(myfeq(
         round_trip.trans[HMMTRANS::HMMTRANS_M_M as usize] as f64,
@@ -4645,6 +5749,17 @@ fn hmm_path_feature_and_seq_gap_helpers_match_cpp_logic() {
     hmm_params_assert_probs_valid(&updated_hmm);
     assert!(updated_hmm.trans[HMMTRANS::HMMTRANS_START_IS as usize] > 0.0);
     assert!(updated_hmm.trans[HMMTRANS::HMMTRANS_M_IS as usize] > 0.0);
+    let mut match_only = def_hmm.clone();
+    match_only.trans[HMMTRANS::HMMTRANS_M_M as usize] = 4.0;
+    match_only.trans[HMMTRANS::HMMTRANS_M_IS as usize] = 1.0;
+    match_only.trans[HMMTRANS::HMMTRANS_M_IL as usize] = 2.0;
+    hmm_params_normalize_match(&mut match_only);
+    assert!(myfeq(
+        (match_only.trans[HMMTRANS::HMMTRANS_M_M as usize]
+            + 2.0 * match_only.trans[HMMTRANS::HMMTRANS_M_IS as usize]
+            + 2.0 * match_only.trans[HMMTRANS::HMMTRANS_M_IL as usize]) as f64,
+        1.0
+    ));
     hmm_params_to_pair_hmm(&def_hmm);
     {
         let ins = PAIR_HMM_INS_SCORE.lock().unwrap();
@@ -4717,8 +5832,11 @@ fn hmm_path_feature_and_seq_gap_helpers_match_cpp_logic() {
     assert!((align_hp.var - 0.125).abs() < f32::EPSILON);
     assert_eq!(align_mpc.tree_perm, TREEPERM::TP_ACB);
     assert_eq!(align_out, "<acb.0\n>a\nAC\n>b\nAG\n");
+    let missing_hmmin_path =
+        std::env::temp_dir().join(format!("muscle_rs_missing_hmmin_{}", std::process::id()));
+    set_hmmin_path(Some(missing_hmmin_path.to_string_lossy().to_string()));
     let mut skipped_update = false;
-    let (_skipped_hp, skipped_out) = align(
+    let (skipped_hp, skipped_out) = align(
         &mut align_mpc,
         &align_input,
         0,
@@ -4728,7 +5846,9 @@ fn hmm_path_feature_and_seq_gap_helpers_match_cpp_logic() {
         |_hp| skipped_update = true,
         |_mpc, _input_seqs| panic!("Align should return immediately for null output"),
     );
+    set_hmmin_path(None);
     assert!(!skipped_update);
+    assert_eq!(skipped_hp, HMMParams::default());
     assert!(skipped_out.is_empty());
 
     let cmd_dir = std::env::temp_dir().join(format!("muscle_rs_cmd_align_{}", std::process::id()));
@@ -5107,6 +6227,38 @@ fn profile_position_score_matches_cpp_loop_order() {
     assert!((nw_score - 3.0).abs() < 1e-6, "{nw_score}");
     assert_eq!(cm.cache_tb.len(), 2);
 
+    let mut a0 = ProfPos3::default();
+    a0.sort_order[0] = 0;
+    a0.sort_order[1] = 1;
+    a0.freqs[0] = 1.0;
+    a0.gap_open_score = -3.0;
+    a0.gap_close_score = -1.0;
+    let mut a1 = ProfPos3::default();
+    a1.sort_order[0] = 1;
+    a1.sort_order[1] = 0;
+    a1.freqs[1] = 1.0;
+    a1.gap_open_score = -3.0;
+    a1.gap_close_score = -1.0;
+    let mut b0 = ProfPos3::default();
+    b0.aa_scores[0] = 6.0;
+    b0.aa_scores[1] = -3.0;
+    b0.gap_open_score = -3.0;
+    b0.gap_close_score = -1.0;
+    let mut b1 = ProfPos3::default();
+    b1.aa_scores[0] = -4.0;
+    b1.aa_scores[1] = 7.0;
+    b1.gap_open_score = -3.0;
+    b1.gap_close_score = -1.0;
+    let (nw2_score, nw2_path) = nw_small3(
+        &mut cm,
+        &Profile3 { pps: vec![a0, a1] },
+        &Profile3 { pps: vec![b0, b1] },
+    );
+    assert_eq!(nw2_path, "MM");
+    assert!((nw2_score - 13.0).abs() < 1e-6, "{nw2_score}");
+    assert_eq!(cm.cache_tb.len(), 3);
+    assert_eq!(cm.cache_tb[2][2] & BIT_xM, BIT_MM);
+
     let mut counts = [0.0_f32; 20];
     counts[3] = 0.5;
     counts[1] = 0.5;
@@ -5207,6 +6359,28 @@ fn profile_position_score_matches_cpp_loop_order() {
     assert!((prof_ab.pps[0].freqs[0] - 0.5).abs() < 1e-6);
     assert!((prof_ab.pps[0].freqs[1] - 0.5).abs() < 1e-6);
     assert_eq!(prof_ab.pps[0].ll, 1.0);
+    let mut msa_a3 = MultiSequence::default();
+    let mut msa_b3 = MultiSequence::default();
+    multi_sequence_from_strings(&mut msa_a3, &["a3".to_string()], &["AAA".to_string()]);
+    multi_sequence_from_strings(&mut msa_b3, &["b3".to_string()], &["CCC".to_string()]);
+    let mut prof_a3 = Profile3::default();
+    let mut prof_b3 = Profile3::default();
+    profile3_from_msa(&mut prof_a3, &msa_a3, &subst, -2.0, &[1.0]);
+    profile3_from_msa(&mut prof_b3, &msa_b3, &subst, -2.0, &[1.0]);
+    let prof_di = align_two_profs_given_path(&prof_a3, 1.0, &prof_b3, 3.0, &subst, -2.0, "MDIM");
+    assert_eq!(prof_di.pps.len(), 4);
+    assert!((prof_di.pps[1].ll - 0.25).abs() < 1e-6);
+    assert!((prof_di.pps[1].lg - 0.75).abs() < 1e-6);
+    assert_eq!(prof_di.pps[2].ll, 0.0);
+    assert!((prof_di.pps[2].lg - 0.25).abs() < 1e-6);
+    assert!((prof_di.pps[2].gl - 0.75).abs() < 1e-6);
+    assert!((prof_di.pps[3].ll - 0.75).abs() < 1e-6);
+    assert!((prof_di.pps[3].gl - 0.25).abs() < 1e-6);
+    let prof_id = align_two_profs_given_path(&prof_a3, 1.0, &prof_b3, 3.0, &subst, -2.0, "MIDM");
+    assert_eq!(prof_id.pps.len(), 4);
+    assert_eq!(prof_id.pps[2].ll, 0.0);
+    assert!((prof_id.pps[2].lg - 0.75).abs() < 1e-6);
+    assert!((prof_id.pps[2].gl - 0.25).abs() < 1e-6);
 
     let mut msa = MultiSequence::default();
     multi_sequence_from_strings(
@@ -5259,6 +6433,25 @@ fn profile_position_score_matches_cpp_loop_order() {
     assert_eq!(profile3_get_pp(&prof, 1).f_occ, 0.7);
     assert_eq!(profile3_to_tsv_l256(&prof).lines().count(), 3);
     profile3_to_tsv_l249(&prof, "");
+    let prof_tsv_file =
+        std::env::temp_dir().join(format!("muscle_rs_profile3_tsv_{}.tsv", std::process::id()));
+    profile3_to_tsv_l249(&prof, prof_tsv_file.to_str().unwrap());
+    assert_eq!(
+        std::fs::read_to_string(&prof_tsv_file).unwrap(),
+        profile3_to_tsv_l256(&prof)
+    );
+    std::fs::remove_file(&prof_tsv_file).unwrap();
+
+    assert_eq!(log_f(0.0), "       ");
+    assert_eq!(log_f(0.00125), "  0.001");
+    assert_eq!(log_f(-2.5), "  -2.500");
+    let log_me = profile3_log_me(&prof, None);
+    assert!(
+        log_me
+            .starts_with("  Pos  Occ     LL     LG     GL     GG       Open    Close\n  ---  ---")
+    );
+    assert!(log_me.contains("    0  0.600  0.400  0.100  0.200  0.300    0.600    0.800\n"));
+    assert!(log_me.contains("Scores\n  Col     A     C     D"));
 
     let mut prof2 = prof.clone();
     prof2.pps[0].freqs[0] = 0.5;
@@ -5278,6 +6471,33 @@ fn profile_position_score_matches_cpp_loop_order() {
     profile3_from_msa(&mut built, &msa, &subst, -2.0, &[0.2, 0.3, 0.5]);
     assert_eq!(built.pps.len(), 3);
     assert!(profile3_log_me(&built, Some(&msa)).contains("  Pos  Occ"));
+    let mut seq_for_profile = Sequence::default();
+    sequence_from_string(&mut seq_for_profile, "singleton", "AC");
+    let mut from_seq_prof = Profile3::default();
+    profile3_from_seq(&mut from_seq_prof, &seq_for_profile, &subst, -2.0);
+    let mut singleton_msa = MultiSequence::default();
+    multi_sequence_from_strings(
+        &mut singleton_msa,
+        &["singleton".to_string()],
+        &["AC".to_string()],
+    );
+    let mut from_msa_prof = Profile3::default();
+    profile3_from_msa(&mut from_msa_prof, &singleton_msa, &subst, -2.0, &[1.0]);
+    assert_eq!(
+        profile3_to_tsv_l256(&from_seq_prof),
+        profile3_to_tsv_l256(&from_msa_prof)
+    );
+
+    let mut rescored = built.clone();
+    let old_score = rescored.pps[0].aa_scores[0];
+    let old_gap = rescored.pps[0].gap_open_score;
+    let mut subst2 = subst;
+    subst2[0][0] += 10.0;
+    profile3_set_aa_scores(&mut rescored, &subst2);
+    assert!(rescored.pps[0].aa_scores[0] > old_score);
+    assert_eq!(rescored.pps[0].gap_open_score, old_gap);
+    profile3_set_scores(&mut rescored, &subst2, -4.0);
+    assert!(rescored.pps[0].gap_open_score < old_gap);
     profile3_clear(&mut built);
     assert!(built.pps.is_empty());
 
@@ -5307,8 +6527,20 @@ fn profile_position_score_matches_cpp_loop_order() {
         "MSA={}\n",
         base_name(prof_cmd_in.to_str().unwrap())
     )));
+    let self_log_file = std::env::temp_dir().join(format!(
+        "muscle_rs_profile3_self_{}.log",
+        std::process::id()
+    ));
+    set_log_file_name(self_log_file.to_str().unwrap());
+    let (_, _, self_log_again) = cmd_msaselfscore3(prof_cmd_in.to_str().unwrap(), &subst, -2.0);
+    set_log_file_name("");
+    assert_eq!(
+        std::fs::read_to_string(&self_log_file).unwrap(),
+        self_log_again
+    );
     std::fs::remove_file(&prof_cmd_in).unwrap();
     std::fs::remove_file(&prof_cmd_out).unwrap();
+    std::fs::remove_file(&self_log_file).unwrap();
 }
 
 #[test]
@@ -5373,6 +6605,26 @@ fn sequence_mapping_and_msa_format_helpers_match_cpp_logic() {
     assert_eq!(merge_map, vec![1, 3]);
     assert_eq!(sequence_get_seq_as_string(&cols_x2.seqs[0]), "ABCD.");
     assert_eq!(sequence_get_seq_as_string(&cols_y2.seqs[0]), ".WXYZ");
+    let mut leading_x2 = MultiSequence::default();
+    let mut leading_y2 = MultiSequence::default();
+    let mut leading_path = String::new();
+    let mut leading_merge_map = Vec::new();
+    multi_sequence_from_strings(&mut msa_x, &["x1".to_string()], &["ABCDE".to_string()]);
+    multi_sequence_from_strings(&mut msa_y, &["y1".to_string()], &["WXYZ".to_string()]);
+    align_ms_as_by_cols(
+        &msa_x,
+        &msa_y,
+        &[0, 4],
+        &[2, 3],
+        &mut leading_path,
+        &mut leading_merge_map,
+        &mut leading_x2,
+        &mut leading_y2,
+    );
+    assert_eq!(leading_path, "yyMxxxM");
+    assert_eq!(leading_merge_map, vec![2, 6]);
+    assert_eq!(sequence_get_seq_as_string(&leading_x2.seqs[0]), "..ABCDE");
+    assert_eq!(sequence_get_seq_as_string(&leading_y2.seqs[0]), "WXY...Z");
 
     let mut mpc = MPCFlat::default();
     let mut combined = MultiSequence::default();
@@ -5467,6 +6719,29 @@ fn sequence_mapping_and_msa_format_helpers_match_cpp_logic() {
     assert_eq!(
         write_local_aln("labA", b"AbCd", "labB", b"aXYd", 0, 0, "MDIM"),
         "    1 Ab-C 3  labA\n      |   \n    1 a-XY 3  labB\n\n"
+    );
+    let long_path = "M".repeat(81);
+    let long_seq = "A".repeat(81);
+    assert_eq!(
+        write_local_aln(
+            "longA",
+            long_seq.as_bytes(),
+            "longB",
+            long_seq.as_bytes(),
+            0,
+            0,
+            &long_path,
+        ),
+        format!(
+            "    1 {} 80  longA\n      {}\n    1 {} 80  longB\n\n   81 A 81  longA\n      |\n   81 A 81  longB\n\n",
+            "A".repeat(80),
+            "|".repeat(80),
+            "A".repeat(80),
+        )
+    );
+    assert_eq!(
+        write_local_aln("offA", b"xxABC", "offB", b"yyADC", 2, 2, "MDM",),
+        "    3 ABC 5  offA\n      |  \n    3 A-D 4  offB\n\n"
     );
 
     let labels = vec!["a".to_string(), "b".to_string(), "c".to_string()];
@@ -6143,6 +7418,22 @@ fn sequence_mapping_and_msa_format_helpers_match_cpp_logic() {
         ),
         ">new1\nAC\n>new2\nTG\n>keep\nNN\n"
     );
+    let relabel_log =
+        std::env::temp_dir().join(format!("muscle_rs_relabel_log_{}.txt", std::process::id()));
+    set_log_file_name(relabel_log.to_str().unwrap());
+    assert_eq!(
+        cmd_relabel(
+            relabel_in.to_str().unwrap(),
+            relabel_labels.to_str().unwrap(),
+            "",
+        ),
+        ">new1\nAC\n>new2\nTG\n>keep\nNN\n"
+    );
+    set_log_file_name("");
+    assert_eq!(
+        std::fs::read_to_string(&relabel_log).unwrap(),
+        "Not found >keep\n"
+    );
 
     let a2m_in =
         std::env::temp_dir().join(format!("muscle_rs_make_a2m_in_{}.fa", std::process::id()));
@@ -6181,6 +7472,7 @@ fn sequence_mapping_and_msa_format_helpers_match_cpp_logic() {
     std::fs::remove_file(&relabel_in).unwrap();
     std::fs::remove_file(&relabel_labels).unwrap();
     std::fs::remove_file(&relabel_out).unwrap();
+    std::fs::remove_file(&relabel_log).unwrap();
     std::fs::remove_file(&a2m_in).unwrap();
     std::fs::remove_file(&a2m_out).unwrap();
     let mut all_gaps = MultiSequence::default();
@@ -6256,12 +7548,14 @@ fn sequence_mapping_and_msa_format_helpers_match_cpp_logic() {
     let subst_msa = subst_dir.join("one.fa");
     let subst_list = subst_dir.join("list.txt");
     let subst_out = subst_dir.join("mx.tsv");
+    let subst_log_file = subst_dir.join("subst.log");
     std::fs::write(
         &subst_msa,
         format!(">s1\n{AMINO_ALPHA}\n>s2\n{AMINO_ALPHA}\n"),
     )
     .unwrap();
     std::fs::write(&subst_list, format!("{}\n", subst_msa.to_string_lossy())).unwrap();
+    set_log_file_name(subst_log_file.to_str().unwrap());
     let subst_log = cmd_make_substmx(
         subst_list.to_str().unwrap(),
         subst_out.to_str().unwrap(),
@@ -6269,14 +7563,59 @@ fn sequence_mapping_and_msa_format_helpers_match_cpp_logic() {
         Some(100),
         Some(100),
     );
+    set_log_file_name("");
     assert!(subst_log.contains("A  0.050000  4\n"));
     assert!(subst_log.contains("Sum = 1.000000"));
     assert!(subst_log.contains("100\t1\t1\n"));
     assert!(subst_log.contains("99\t0\t0\n"));
     assert!(subst_log.contains("Score matrix"));
+    let subst_sink_log = std::fs::read_to_string(&subst_log_file).unwrap();
+    assert!(subst_sink_log.contains(&format!(
+        "100.0% Reading MSA {}\n",
+        subst_msa.to_string_lossy()
+    )));
+    assert!(subst_sink_log.contains("100.0% Counting letters\n"));
+    assert!(subst_sink_log.ends_with(&subst_log));
+    {
+        let label_pair_to_rows = MAKE_SUBST_MX_LABEL_PAIR_TO_ROWS.lock().unwrap();
+        assert_eq!(label_pair_to_rows.len(), 1);
+        assert_eq!(
+            label_pair_to_rows
+                .get(&("s2".to_string(), "s1".to_string()))
+                .unwrap(),
+            &(AMINO_ALPHA.to_string(), AMINO_ALPHA.to_string())
+        );
+    }
     let subst_text = std::fs::read_to_string(&subst_out).unwrap();
     assert!(subst_text.starts_with("TESTMX\tA\tC\tD\tE"));
     assert!(subst_text.contains("A\t4.322"));
+    let subst_case_msa = subst_dir.join("case.fa");
+    let subst_case_list = subst_dir.join("case_list.txt");
+    std::fs::write(&subst_case_msa, b">s1\nAaC\n>s2\nAaD\n").unwrap();
+    std::fs::write(
+        &subst_case_list,
+        format!("{}\n", subst_case_msa.to_string_lossy()),
+    )
+    .unwrap();
+    let subst_case_log = cmd_make_substmx(
+        subst_case_list.to_str().unwrap(),
+        "",
+        Some("TESTMX"),
+        Some(50),
+        Some(50),
+    );
+    assert!(subst_case_log.contains("A  0.500000  4\n"));
+    assert!(subst_case_log.contains("C  0.250000  2\n"));
+    assert!(subst_case_log.contains("D  0.250000  2\n"));
+    assert!(subst_case_log.contains("50\t1\t1\n"));
+    let subst_max_only_log = cmd_make_substmx(
+        subst_case_list.to_str().unwrap(),
+        "",
+        Some("TESTMX"),
+        None,
+        Some(10),
+    );
+    assert!(subst_max_only_log.contains("50\t1\t1\n"));
     assert!(
         std::panic::catch_unwind(|| cmd_make_substmx(
             subst_list.to_str().unwrap(),
@@ -6364,6 +7703,47 @@ fn sequence_mapping_and_msa_format_helpers_match_cpp_logic() {
     assert!((old_q - (2.0 / 3.0)).abs() < 1e-12);
     assert!((old_tc - (2.0 / 3.0)).abs() < 1e-12);
     assert!(old_log.contains("Q=0.667, TC=0.667"));
+    std::fs::write(&qscore_ref, b">r1\nAC-G\n>r2\nAT-G\n").unwrap();
+    std::fs::write(&qscore_test, b">r1\nac-g\n>r2\nat-g\n").unwrap();
+    let qscore_old_log = std::env::temp_dir().join(format!(
+        "muscle_rs_qscore_old_log_{}.txt",
+        std::process::id()
+    ));
+    set_log_file_name(qscore_old_log.to_str().unwrap());
+    let (old_case_q, old_case_tc, old_case_log) =
+        cmd_qscore_oldcode(qscore_test.to_str().unwrap(), qscore_ref.to_str().unwrap());
+    set_log_file_name("");
+    assert_eq!((old_case_q, old_case_tc), (1.0, 1.0));
+    assert!(old_case_log.contains("Q=1, TC=1"));
+    assert_eq!(
+        std::fs::read_to_string(&qscore_old_log).unwrap(),
+        old_case_log
+    );
+    std::fs::write(&qscore_ref, b">r1\nac-g\n>r2\nat-g\n").unwrap();
+    let (old_lower_ref_q, old_lower_ref_tc, old_lower_ref_log) =
+        cmd_qscore_oldcode(qscore_test.to_str().unwrap(), qscore_ref.to_str().unwrap());
+    assert_eq!((old_lower_ref_q, old_lower_ref_tc), (0.0, 0.0));
+    assert!(old_lower_ref_log.contains("Q=0, TC=0"));
+    assert!(old_lower_ref_log.contains("has no aligned (upper-case) columns"));
+    std::fs::write(&qscore_ref, b">r1\nAC-G\n>r2\nAT-G\n").unwrap();
+    std::fs::write(&qscore_test, b">r1\nTC-G\n>r2\nAT-G\n").unwrap();
+    let (_old_diff_q, _old_diff_tc, old_diff_log) =
+        cmd_qscore_oldcode(qscore_test.to_str().unwrap(), qscore_ref.to_str().unwrap());
+    assert!(old_diff_log.contains("differs from ref seq"));
+    assert!(old_diff_log.contains("1 seq diffs ignored"));
+    std::fs::write(&qscore_test, b">r1\nAC-G\n>r2\nAT-G\n").unwrap();
+    let (_old_verbose_q, _old_verbose_tc, old_verbose_log) = cmd_qscore_oldcode_with_options(
+        qscore_test.to_str().unwrap(),
+        qscore_ref.to_str().unwrap(),
+        true,
+    );
+    assert_eq!(
+        old_verbose_log.matches("RefCol  RefAln  NonGapped").count(),
+        2
+    );
+    assert!(old_verbose_log.contains("CorrectPairCount"));
+    assert!(old_verbose_log.contains("Q                    1.0000"));
+    std::fs::remove_file(&qscore_old_log).unwrap();
     std::fs::remove_file(&qscore_ref).unwrap();
     std::fs::remove_file(&qscore_test).unwrap();
 
@@ -6461,19 +7841,65 @@ fn sequence_mapping_and_msa_format_helpers_match_cpp_logic() {
     mx_base.data[0][1] = 2.0;
     mx_base.data[0][2] = 1_234_567.0;
     mx_base.data[1][0] = UNINIT;
+    let mx_log_file = std::env::temp_dir().join(format!(
+        "muscle_rs_mx_base_log_sink_{}.log",
+        std::process::id()
+    ));
+    set_log_file_name(mx_log_file.to_str().unwrap());
     let log = mx_base_log_me(&mx_base, true, 0);
-    assert!(log.contains("base Rows 2/"));
+    assert!(log.contains("base(0x"));
+    assert!(log.contains(" Rows 2/"));
     assert!(log.contains("     2.00000"));
     assert!(log.contains("   1.235e+06"));
     let log_exp = mx_base_log_me(&mx_base, true, OPT_EXP);
-    assert!(log_exp.starts_with("\nExp base"));
+    assert!(log_exp.starts_with("\nExp base(0x"));
     mx_base_alloc(&mut mx_base, 40, 2, "grown");
     assert_eq!(mx_base.name, "grown");
     assert_eq!(mx_base.row_count, 40);
     let counts = mx_base_log_counts();
+    set_log_file_name("");
+    let mx_global_log = std::fs::read_to_string(&mx_log_file).unwrap();
+    assert!(mx_global_log.starts_with(&log));
+    assert!(mx_global_log.contains(&log_exp));
+    assert!(mx_global_log.ends_with(&counts));
     assert!(counts.contains("MxBase::LogCounts()"));
     assert!(counts.contains("Allocs"));
     mx_base_on_dtor(&mut mx_base);
+
+    let mut cpp_mx = CppMxRaw::new(std::mem::size_of::<u32>() as uint);
+    cpp_mx_base_alloc(&mut cpp_mx, 2, 3, "cpp");
+    assert_eq!(cpp_mx.base.name, "cpp");
+    assert_eq!(cpp_mx.base.row_count, 2);
+    assert_eq!(cpp_mx.base.col_count, 3);
+    assert_eq!(cpp_mx.base.allocated_row_count, 18);
+    assert_eq!(cpp_mx.base.allocated_col_count, 19);
+    let row_bytes = 18 * std::mem::size_of::<*mut byte>();
+    assert_eq!(
+        cpp_mx.raw_buffer_len(),
+        row_bytes + 18 * 19 * std::mem::size_of::<u32>()
+    );
+    let row0 = cpp_mx.row_ptr_value(0) as usize;
+    let row1 = cpp_mx.row_ptr_value(1) as usize;
+    assert_eq!(row1 - row0, 19 * std::mem::size_of::<u32>());
+    assert_eq!(cpp_mx.cell_offset(1, 2), row_bytes + (19 + 2) * 4);
+    let value = 0x1122_3344_u32.to_ne_bytes();
+    unsafe {
+        std::ptr::copy_nonoverlapping(value.as_ptr(), cpp_mx.cell_ptr(1, 2), value.len());
+        let mut round_trip = [0_u8; 4];
+        std::ptr::copy_nonoverlapping(cpp_mx.cell_ptr(1, 2), round_trip.as_mut_ptr(), 4);
+        assert_eq!(round_trip, value);
+    }
+
+    cpp_mx_base_alloc(&mut cpp_mx, 40, 2, "grown-cpp");
+    assert_eq!(cpp_mx.base.name, "grown-cpp");
+    assert_eq!(cpp_mx.base.row_count, 40);
+    assert_eq!(cpp_mx.base.col_count, 2);
+    assert_eq!(cpp_mx.base.allocated_row_count, 56);
+    assert_eq!(cpp_mx.base.allocated_col_count, 18);
+    assert_eq!(
+        cpp_mx.row_ptr_value(1) as usize - cpp_mx.row_ptr_value(0) as usize,
+        18 * std::mem::size_of::<u32>()
+    );
 }
 
 #[test]
@@ -6494,14 +7920,24 @@ fn multi_sequence_string_and_length_helpers_match_cpp_logic() {
     assert_eq!(multi_sequence_get_col_count(&ms), 4);
     assert_eq!(multi_sequence_get_seq_length(&ms, 0), 4);
     assert_eq!(multi_sequence_get_seq_index(&ms, "s2", true), 1);
+    let probcons_log_file = std::env::temp_dir().join(format!(
+        "muscle_rs_probcons_summary_{}.log",
+        std::process::id()
+    ));
+    set_log_file_name(probcons_log_file.to_str().unwrap());
+    let input_summary = progress_log_input_summary("input.fa", &ms);
+    let msa_summary = progress_log_msa_summary("MSA summary", &ms);
+    set_log_file_name("");
     assert_eq!(
-        progress_log_input_summary("input.fa", &ms),
+        input_summary,
         "\nInput  input.fa\nSeqs   3\nMinL   4\nMaxL   4\n\n"
     );
+    assert_eq!(msa_summary, "\nMSA summary\nSeqs   3\nCols   4\n\n");
     assert_eq!(
-        progress_log_msa_summary("MSA summary", &ms),
-        "\nMSA summary\nSeqs   3\nCols   4\n\n"
+        std::fs::read_to_string(&probcons_log_file).unwrap(),
+        format!("{input_summary}{msa_summary}")
     );
+    std::fs::remove_file(&probcons_log_file).unwrap();
     assert_eq!(
         multi_sequence_get_seq_index(&ms, "missing", false),
         uint::MAX
@@ -7012,6 +8448,39 @@ fn multi_sequence_string_and_length_helpers_match_cpp_logic() {
             .collect::<Vec<_>>(),
         vec!["u2".to_string(), "u1".to_string()]
     );
+
+    let mut reuse_first = MultiSequence::default();
+    multi_sequence_from_strings(
+        &mut reuse_first,
+        &["r0".to_string(), "r1".to_string()],
+        &["AAAA".to_string(), "TTTT".to_string()],
+    );
+    set_global_input_ms(&reuse_first);
+    let mut reused_u = UClust::default();
+    u_clust_run(&mut reused_u, &reuse_first, 0.9, |_label1, _label2| {
+        (0.0, "XXXX".to_string())
+    });
+    assert_eq!(reused_u.centroid_seq_indexes, vec![1, 0]);
+
+    let mut reuse_second = MultiSequence::default();
+    multi_sequence_from_strings(
+        &mut reuse_second,
+        &["s0".to_string(), "s1".to_string()],
+        &["CCCC".to_string(), "CCCA".to_string()],
+    );
+    set_global_input_ms(&reuse_second);
+    u_clust_run(&mut reused_u, &reuse_second, 0.9, |_label1, _label2| {
+        (0.95, "BBBB".to_string())
+    });
+    // C++ muscle/src/uclust.cpp UClust::Run clears the member/path vectors
+    // and reinitializes the sorter, but does not clear m_CentroidSeqIndexes.
+    assert_eq!(reused_u.centroid_seq_indexes, vec![1, 0, 1]);
+    assert_eq!(reused_u.seq_index_to_centroid_seq_index, vec![1, 1]);
+    assert_eq!(
+        reused_u.seq_index_to_path,
+        vec!["BBBB".to_string(), String::new()]
+    );
+
     let uclust_fasta = std::env::temp_dir().join(format!(
         "muscle_rs_uclustpd_centroids_{}.fa",
         std::process::id()
@@ -7458,6 +8927,11 @@ fn multi_sequence_string_and_length_helpers_match_cpp_logic() {
     refine_loop_mpc.refine_iter_count = 2;
     let split_loop_values = std::cell::RefCell::new(vec![0, 1, 0, 1, 0, 1, 0, 1].into_iter());
     let mut refine_loop_calls = 0;
+    let refine_log = std::env::temp_dir().join(format!(
+        "muscle_rs_mpcflat_refine_progress_{}.log",
+        std::process::id()
+    ));
+    set_log_file_name(refine_log.to_str().unwrap());
     mpc_flat_refine(
         &mut refine_loop_mpc,
         || split_loop_values.borrow_mut().next().unwrap(),
@@ -7471,7 +8945,11 @@ fn multi_sequence_string_and_length_helpers_match_cpp_logic() {
             joined
         },
     );
+    set_log_file_name("");
     assert_eq!(refine_loop_calls, 2);
+    let refine_log_text = std::fs::read_to_string(&refine_log).unwrap();
+    assert!(refine_log_text.contains("100.0% Refining\n"));
+    std::fs::remove_file(&refine_log).unwrap();
 
     let mut shuffled_msa = MultiSequence::default();
     multi_sequence_from_strings(
@@ -7682,7 +9160,21 @@ fn multi_sequence_string_and_length_helpers_match_cpp_logic() {
 #[test]
 fn sweeper_and_tree_label_helpers_match_cpp_logic() {
     let _guard = RNG_TEST_LOCK.lock().unwrap();
+    let _global_guard = GLOBAL_STATE_TEST_LOCK.lock().unwrap();
     let mut s = Sweeper::default();
+    assert_eq!(s.grid_counter, uint::MAX);
+    assert_eq!(s.grid_count, uint::MAX);
+    assert_eq!(s.spatter_tries_per_iter, uint::MAX);
+    assert_eq!(s.spatter_try, uint::MAX);
+    assert_eq!(s.spatter_iter, uint::MAX);
+    assert_eq!(s.spatter_shrink, f32::MAX);
+    assert_eq!(s.min_delta, 0.05);
+    assert_eq!(s.start_max_distinct_score_drop, 0.04);
+    assert_eq!(s.end_max_distinct_score_drop, 0.01);
+    assert_eq!(s.start_min_distinct_param_dist, 1.0);
+    assert_eq!(s.end_min_distinct_param_dist, 0.2);
+    assert_eq!(s.max_distinct_score_drop, f32::MAX);
+    assert_eq!(s.min_distinct_param_dist, f32::MAX);
     sweeper_set_param_names(&mut s, &["a".to_string(), "b".to_string(), "c".to_string()]);
     assert_eq!(s.param_count, 3);
     assert_eq!(s.param_names, vec!["a", "b", "c"]);
@@ -7707,6 +9199,20 @@ fn sweeper_and_tree_label_helpers_match_cpp_logic() {
         sweeper_log_top(&s, 1),
         "Top params:\n Score       Q      TC         a         b         c\n0.7500  0.2000  0.9000           4           6           3\n"
     );
+    let sweeper_log_file =
+        std::env::temp_dir().join(format!("muscle_rs_sweeper_log_{}.txt", std::process::id()));
+    set_log_file_name(sweeper_log_file.to_str().unwrap());
+    let _ = sweeper_log_indexes(&s, &[1]);
+    let _ = sweeper_log_top(&s, 1);
+    let _ = sweeper_log_distinct_top(&s, &[0.1, 0.1, 0.1], 1, 1.0, 10.0, 1);
+    s.spatter_deltas = vec![0.1, 0.2, 0.3];
+    let _ = sweeper_log_spatter_deltas(&s);
+    set_log_file_name("");
+    let sweeper_log_text = std::fs::read_to_string(&sweeper_log_file).unwrap();
+    assert!(sweeper_log_text.contains("Top params:\n"));
+    assert!(sweeper_log_text.contains("Distinct top (1 of 1)\n"));
+    assert!(sweeper_log_text.contains("Deltas:  a=0.1  b=0.2  c=0.3\n"));
+    std::fs::remove_file(&sweeper_log_file).unwrap();
     let mut run_s = Sweeper::default();
     sweeper_set_param_names(&mut run_s, &["x".to_string(), "y".to_string()]);
     run_s.grid_coords = vec![1, 0];
@@ -7871,6 +9377,11 @@ fn sweeper_and_tree_label_helpers_match_cpp_logic() {
     explore_s.end_max_distinct_score_drop = 0.1;
     explore_s.start_min_distinct_param_dist = 0.1;
     explore_s.end_min_distinct_param_dist = 0.0;
+    let spatter_loop_log_file = std::env::temp_dir().join(format!(
+        "muscle_rs_spatter_loop_log_{}.txt",
+        std::process::id()
+    ));
+    set_log_file_name(spatter_loop_log_file.to_str().unwrap());
     reset_rand(1);
     let explore_fev = sweeper_explore_spatter(
         &mut explore_s,
@@ -7882,11 +9393,22 @@ fn sweeper_and_tree_label_helpers_match_cpp_logic() {
         0.5,
         |_s, values| (values[0] as f64, values[0] as f64),
     );
+    set_log_file_name("");
     assert_eq!(explore_s.spatter_seed_indexes, vec![0, 1]);
     assert_eq!(explore_s.spatter_tries_per_iter, 1);
     assert_eq!(explore_s.spatter_failed_iter_count, 1);
     assert_eq!(explore_s.spatter_deltas, vec![0.0]);
     assert!(explore_fev.starts_with("1\tscore=2\tQ=2\tTC=2\tp=2\tnewbest=yes\n"));
+    let spatter_loop_log_text = std::fs::read_to_string(&spatter_loop_log_file).unwrap();
+    assert!(spatter_loop_log_text.contains(">>>>> m_SpatterIter=0 (max 1, failed 0 / 1) <<<<<\n"));
+    assert!(
+        spatter_loop_log_text
+            .contains("m_MaxDistinctScoreDrop = 1, m_MinDistinctParamDist = 0.1\n")
+    );
+    assert!(spatter_loop_log_text.contains("\nIter 0 seeds (2):\n"));
+    assert!(spatter_loop_log_text.contains(">>>>> Improved = N\n"));
+    assert!(spatter_loop_log_text.contains("\nConverged, max failed iters\n"));
+    std::fs::remove_file(&spatter_loop_log_file).unwrap();
 
     assert_eq!(
         get_max_string(&["b".to_string(), "aa".to_string(), "z".to_string()]),
@@ -8773,10 +10295,21 @@ fn super5_dupe_and_centroid_vecs_match_cpp_index_mapping() {
             ("seq_b".to_string(), "AAAT".to_string()),
         ]
     );
+    let dupe_log_file = std::env::temp_dir().join(format!(
+        "muscle_rs_super5_align_dupes_{}.log",
+        std::process::id()
+    ));
+    set_log_file_name(dupe_log_file.to_str().unwrap());
     assert_eq!(
         super5_align_dupes(&mut made_s5),
         "Inserting 1 dupes... done.\n"
     );
+    set_log_file_name("");
+    assert_eq!(
+        std::fs::read_to_string(&dupe_log_file).unwrap(),
+        "Inserting 1 dupes... done.\n"
+    );
+    std::fs::remove_file(&dupe_log_file).unwrap();
     assert_eq!(
         made_s5
             .extended_msa
@@ -9019,7 +10552,8 @@ fn ea_cluster_mfa_helpers_match_cpp_cluster_order() {
     let mut input = MultiSequence::default();
     multi_sequence_from_strings(&mut input, &labels, &seqs);
     set_global_input_ms(&input);
-    MEGA_STATE.lock().unwrap().loaded = false;
+    *MEGA_STATE.lock().unwrap() = MegaState::default();
+    MEGA_LOADED.store(false, std::sync::atomic::Ordering::Relaxed);
     let (flat_ea, flat_path) = align_pair_flat("seq_a", "seq_b");
     assert!(!flat_path.is_empty());
     assert_eq!(ea_cluster_align_seq_pair("seq_a", "seq_b"), flat_ea);
@@ -9049,10 +10583,19 @@ fn ea_cluster_mfa_helpers_match_cpp_cluster_order() {
     super5_validate_vecs(&s5);
     assert_eq!(s5.centroid_seqs_seq_index_to_gsi, vec![0]);
     assert_eq!(s5.centroid_msa_seq_index_to_gsi, vec![0]);
+    let cluster_log_file = std::env::temp_dir().join(format!(
+        "muscle_rs_super5_log_clusters_{}.log",
+        std::process::id()
+    ));
+    set_log_file_name(cluster_log_file.to_str().unwrap());
+    let cluster_log = "  GSI  Cat   CSSI   CMSI   MbCt   Cent\n    0  Cnt      0      0      1      *  >seq_a <1> =2\n    1  Mem      *      *      0      0  >seq_b  >> seq_a\n    2  Dup      *      *      0      *  >seq_c\n";
+    assert_eq!(super5_log_clusters(&s5), cluster_log);
+    set_log_file_name("");
     assert_eq!(
-        super5_log_clusters(&s5),
-        "  GSI  Cat   CSSI   CMSI   MbCt   Cent\n    0  Cnt      0      0      1      *  >seq_a <1> =2\n    1  Mem      *      *      0      0  >seq_b  >> seq_a\n    2  Dup      *      *      0      *  >seq_c\n"
+        std::fs::read_to_string(&cluster_log_file).unwrap(),
+        cluster_log
     );
+    std::fs::remove_file(&cluster_log_file).unwrap();
     let mut labels_from_centroid = Vec::new();
     super5_append_labels_from_centroid(&s5, 0, &mut labels_from_centroid);
     assert_eq!(
@@ -9203,6 +10746,43 @@ fn ea_cluster_mfa_helpers_match_cpp_cluster_order() {
     assert_eq!(best, 0);
     assert_eq!(best_ea, 0.93);
 
+    let mut schedule_input = MultiSequence::default();
+    multi_sequence_from_strings(
+        &mut schedule_input,
+        &[
+            "centroid_a".to_string(),
+            "centroid_b".to_string(),
+            "member".to_string(),
+        ],
+        &["AAAA".to_string(), "AAAT".to_string(), "AAAG".to_string()],
+    );
+    let mut schedule_ec = EACluster {
+        input_seqs: Some(schedule_input),
+        centroid_seq_indexes: vec![0, 1],
+        centroid_index_to_seq_indexes: vec![vec![0], vec![1]],
+        seq_index_to_centroid_index: vec![0, 1, uint::MAX],
+        cluster_mfas: Vec::new(),
+        ..EACluster::default()
+    };
+    u_sorter_init(&mut schedule_ec.us);
+    u_sorter_add_seq(&mut schedule_ec.us, b"AAAA", 0);
+    u_sorter_add_seq(&mut schedule_ec.us, b"AAAT", 1);
+    let mut literal_best_ea = 0.0;
+    let literal_best = ea_cluster_get_best_centroid_cpp_literal_with_top_schedule(
+        &schedule_ec,
+        2,
+        0.9,
+        &mut literal_best_ea,
+        &[1, 0],
+        |_label1, _label2| 0.95,
+    );
+    let (top_seq_indexes, _) = u_sorter_search_seq(&schedule_ec.us, b"AAAG");
+    assert_eq!(
+        literal_best,
+        schedule_ec.seq_index_to_centroid_index[top_seq_indexes[1] as usize]
+    );
+    assert_eq!(literal_best_ea, 0.95);
+
     let mut sparse_posts = Vec::new();
     let mut dist_calls = Vec::new();
     let (ea_dist_mx, ea_rows) =
@@ -9210,8 +10790,8 @@ fn ea_cluster_mfa_helpers_match_cpp_cluster_order() {
             dist_calls.push((label1.to_string(), label2.to_string()));
             *path = "BB".to_string();
             let mut sparse = MySparseMx::default();
-            sparse.lx = label1.len() as uint;
-            sparse.ly = label2.len() as uint;
+            sparse.lx = dist_calls.len() as uint;
+            sparse.ly = (dist_calls.len() as uint) + 10;
             if label1 == "seq_a" && label2 == "seq_b" {
                 (0.75, Some(sparse))
             } else {
@@ -9227,16 +10807,73 @@ fn ea_cluster_mfa_helpers_match_cpp_cluster_order() {
         ]
     );
     assert_eq!(sparse_posts.len(), 3);
+    assert_eq!(
+        sparse_posts
+            .iter()
+            .map(|sparse| (sparse.lx, sparse.ly))
+            .collect::<Vec<_>>(),
+        vec![(1, 11), (2, 12), (3, 13)]
+    );
     assert_eq!(ea_dist_mx[0][0], 1.0);
     assert_eq!(ea_dist_mx[0][1], 0.75);
     assert_eq!(ea_dist_mx[1][0], 0.75);
     assert_eq!(ea_dist_mx[1][2], 0.25);
-    assert!(ea_rows.starts_with("seq_a\tseq_b\t0.75\n"));
+    assert_eq!(
+        ea_rows,
+        "seq_a\tseq_b\t0.75\nseq_a\tseq_c\t0.25\nseq_b\tseq_c\t0.25\n"
+    );
+
+    let mut literal_sparse_posts = Vec::new();
+    let mut literal_dist_calls = Vec::new();
+    let (literal_ea_dist_mx, literal_ea_rows) = calc_ea_dist_mx_cpp_literal_with_pair_schedule(
+        &input,
+        Some(&mut literal_sparse_posts),
+        true,
+        &[2, 0],
+        |label1, label2, path| {
+            literal_dist_calls.push((label1.to_string(), label2.to_string()));
+            *path = "BB".to_string();
+            let mut sparse = MySparseMx::default();
+            sparse.lx = literal_dist_calls.len() as uint;
+            sparse.ly = literal_dist_calls.len() as uint + 20;
+            if label1 == "seq_a" && label2 == "seq_b" {
+                (0.75, Some(sparse))
+            } else if label1 == "seq_b" && label2 == "seq_c" {
+                (0.5, Some(sparse))
+            } else {
+                (0.25, Some(sparse))
+            }
+        },
+    );
+    assert_eq!(
+        literal_dist_calls,
+        vec![
+            ("seq_b".to_string(), "seq_c".to_string()),
+            ("seq_a".to_string(), "seq_b".to_string()),
+            ("seq_a".to_string(), "seq_c".to_string()),
+        ]
+    );
+    assert_eq!(
+        literal_sparse_posts
+            .iter()
+            .map(|sparse| (sparse.lx, sparse.ly))
+            .collect::<Vec<_>>(),
+        vec![(1, 21), (2, 22), (3, 23)]
+    );
+    assert_eq!(literal_ea_dist_mx[1][2], 0.5);
+    assert_eq!(
+        literal_ea_rows,
+        "seq_b\tseq_c\t0.5\nseq_a\tseq_b\t0.75\nseq_a\tseq_c\t0.25\n"
+    );
 
     let eadist_in =
         std::env::temp_dir().join(format!("muscle_rs_eadist_{}.fa", std::process::id()));
     let eadist_out =
         std::env::temp_dir().join(format!("muscle_rs_eadist_{}.tsv", std::process::id()));
+    let eadist_literal_out = std::env::temp_dir().join(format!(
+        "muscle_rs_eadist_literal_{}.tsv",
+        std::process::id()
+    ));
     std::fs::write(&eadist_in, b">seq_a\nAA--AA\n>seq_b\nAA-AT\n>seq_c\nGGGG\n").unwrap();
     let mut cmd_dist_calls = Vec::new();
     let cmd_dist_mx = cmd_eadistmx(
@@ -9265,8 +10902,27 @@ fn ea_cluster_mfa_helpers_match_cpp_cluster_order() {
         std::fs::read_to_string(&eadist_out).unwrap(),
         "seq_a\tseq_b\t0.875\nseq_a\tseq_c\t0.125\nseq_b\tseq_c\t0.125\n"
     );
+    let literal_cmd_dist_mx = cmd_eadistmx_cpp_literal_with_pair_schedule(
+        eadist_in.to_str().unwrap(),
+        eadist_literal_out.to_str().unwrap(),
+        &[2, 1, 0],
+        |label1, label2, path| {
+            *path = "BB".to_string();
+            if label1 == "seq_b" && label2 == "seq_c" {
+                (0.625, None)
+            } else {
+                (0.375, None)
+            }
+        },
+    );
+    assert_eq!(literal_cmd_dist_mx[1][2], 0.625);
+    assert_eq!(
+        std::fs::read_to_string(&eadist_literal_out).unwrap(),
+        "seq_b\tseq_c\t0.625\nseq_a\tseq_c\t0.375\nseq_a\tseq_b\t0.375\n"
+    );
     std::fs::remove_file(&eadist_in).unwrap();
     std::fs::remove_file(&eadist_out).unwrap();
+    std::fs::remove_file(&eadist_literal_out).unwrap();
 
     let eacluster_in =
         std::env::temp_dir().join(format!("muscle_rs_eacluster_{}.fa", std::process::id()));
@@ -9281,6 +10937,7 @@ fn ea_cluster_mfa_helpers_match_cpp_cluster_order() {
         eacluster_in.to_str().unwrap(),
         0.9,
         &eacluster_pattern,
+        None,
         |label1, label2| {
             cmd_cluster_calls.push((label1.to_string(), label2.to_string()));
             if (label1 == "seq_b" && label2 == "seq_a") || (label1 == "seq_a" && label2 == "seq_b")
@@ -9303,8 +10960,136 @@ fn ea_cluster_mfa_helpers_match_cpp_cluster_order() {
         ">seq_c\nWYVVP\n"
     );
     assert!(cmd_cluster_calls.contains(&("seq_b".to_string(), "seq_a".to_string())));
-    std::fs::remove_file(&eacluster_in).unwrap();
     for file_name in cmd_cluster_files {
+        std::fs::remove_file(file_name).unwrap();
+    }
+
+    std::fs::write(
+        &eacluster_in,
+        b">centroid_a\nAAAA\n>centroid_b\nAAAT\n>member\nAAAG\n",
+    )
+    .unwrap();
+    let eacluster_literal_pattern = format!(
+        "/tmp/muscle_rs_eacluster_cmd_literal_{}_@.afa",
+        std::process::id()
+    );
+    let (literal_cmd_ec, literal_cmd_cluster_files) = cmd_eacluster_cpp_literal_with_top_schedules(
+        eacluster_in.to_str().unwrap(),
+        0.9,
+        &eacluster_literal_pattern,
+        Some(false),
+        &[vec![], vec![], vec![1, 0]],
+        |label1, label2| {
+            if label1 == "centroid_b" || label2 == "centroid_b" {
+                0.1
+            } else {
+                0.95
+            }
+        },
+    );
+    assert_eq!(literal_cmd_ec.centroid_seq_indexes, vec![0, 1]);
+    assert_eq!(literal_cmd_ec.seq_index_to_centroid_index[2], 0);
+    for file_name in literal_cmd_cluster_files {
+        std::fs::remove_file(file_name).unwrap();
+    }
+    std::fs::remove_file(&eacluster_in).unwrap();
+
+    let eacluster_mega =
+        std::env::temp_dir().join(format!("muscle_rs_eacluster_{}.mega", std::process::id()));
+    let eacluster_mega_pattern = format!(
+        "/tmp/muscle_rs_eacluster_cmd_mega_{}_@.afa",
+        std::process::id()
+    );
+    std::fs::write(
+        &eacluster_mega,
+        concat!(
+            "mega\t1\t2\t-4.5\t-0.6\n",
+            "0\tAA\t3\t2.0\n",
+            "freqs\t0.5\t0.25\t0.25\n",
+            "0\t1\n",
+            "1\t0.25\t0.75\n",
+            "2\t0.25\t0.25\t0.5\n",
+            "logoddsmx\n",
+            "0\tA\t1.0\n",
+            "1\tC\t2.0\t3.0\n",
+            "2\tD\t4.0\t5.0\t6.0\n",
+            "chain\t0\tmega_a\t9\n",
+            "0\t0\tA\n",
+            "0\t1\tC\n",
+            "0\t2\tA\n",
+            "0\t3\tC\n",
+            "0\t4\tA\n",
+            "0\t5\tC\n",
+            "0\t6\tA\n",
+            "0\t7\tC\n",
+            "0\t8\tA\n",
+            "chain\t1\tmega_b\t9\n",
+            "1\t0\tA\n",
+            "1\t1\tC\n",
+            "1\t2\tA\n",
+            "1\t3\tC\n",
+            "1\t4\tA\n",
+            "1\t5\tC\n",
+            "1\t6\tA\n",
+            "1\t7\tC\n",
+            "1\t8\tA\n",
+        ),
+    )
+    .unwrap();
+    *MEGA_STATE.lock().unwrap() = MegaState::default();
+    MEGA_LOADED.store(false, std::sync::atomic::Ordering::Relaxed);
+    let mut cmd_mega_calls = Vec::new();
+    let (cmd_mega_ec, cmd_mega_cluster_files) = cmd_eacluster(
+        eacluster_mega.to_str().unwrap(),
+        0.9,
+        &eacluster_mega_pattern,
+        None,
+        |label1, label2| {
+            cmd_mega_calls.push((label1.to_string(), label2.to_string()));
+            0.95
+        },
+    );
+    assert_eq!(cmd_mega_ec.centroid_seq_indexes, vec![0]);
+    assert_eq!(cmd_mega_ec.seq_index_to_centroid_index, vec![0, 0]);
+    assert_eq!(cmd_mega_cluster_files.len(), 1);
+    assert_eq!(
+        std::fs::read_to_string(&cmd_mega_cluster_files[0]).unwrap(),
+        ">mega_a\nACACACACA\n>mega_b\nACACACACA\n"
+    );
+    assert_eq!(
+        sequence_get_seq_as_string(&get_global_input_seq_by_label("mega_a")),
+        "ACACACACA"
+    );
+    assert_eq!(
+        cmd_mega_calls,
+        vec![("mega_b".to_string(), "mega_a".to_string())]
+    );
+    std::fs::remove_file(&eacluster_mega).unwrap();
+    for file_name in cmd_mega_cluster_files {
+        std::fs::remove_file(file_name).unwrap();
+    }
+    *MEGA_STATE.lock().unwrap() = MegaState::default();
+    MEGA_LOADED.store(false, std::sync::atomic::Ordering::Relaxed);
+
+    let eacluster_nt_like = std::env::temp_dir().join(format!(
+        "muscle_rs_eacluster_nt_like_{}.fa",
+        std::process::id()
+    ));
+    let eacluster_nt_like_pattern = format!(
+        "/tmp/muscle_rs_eacluster_nt_like_{}_@.afa",
+        std::process::id()
+    );
+    std::fs::write(&eacluster_nt_like, b">nt_a\nACGT\n>nt_b\nACGA\n").unwrap();
+    let (_cmd_override_ec, cmd_override_files) = cmd_eacluster(
+        eacluster_nt_like.to_str().unwrap(),
+        0.9,
+        &eacluster_nt_like_pattern,
+        Some(false),
+        |_label1, _label2| 0.1,
+    );
+    assert_eq!(get_wildcard_char(), 'X');
+    std::fs::remove_file(&eacluster_nt_like).unwrap();
+    for file_name in cmd_override_files {
         std::fs::remove_file(file_name).unwrap();
     }
 
@@ -9318,14 +11103,34 @@ fn ea_cluster_mfa_helpers_match_cpp_cluster_order() {
         std::env::temp_dir().join(format!("muscle_rs_eesort_{}.tsv", std::process::id()));
     std::fs::write(&eesort_query, b">q1\nEFIL\n>q2\nPQRS\n").unwrap();
     std::fs::write(&eesort_db, b">db_a\nEF--IL\n>db_b\nPQ-RS\n>db_c\nWYVV\n").unwrap();
-    let mut eesort_calls = Vec::new();
+    let saved_argv_for_eesort = G_ARGV.lock().unwrap().clone();
+    {
+        let mut argv = G_ARGV.lock().unwrap();
+        argv.clear();
+        argv.extend([
+            "muscle".to_string(),
+            "-threads".to_string(),
+            "1".to_string(),
+        ]);
+    }
+    let mut eesort_prior_global = MultiSequence::default();
+    multi_sequence_from_strings(
+        &mut eesort_prior_global,
+        &["prior_global".to_string()],
+        &["AAAA".to_string()],
+    );
+    set_global_input_ms(&eesort_prior_global);
+    let eesort_calls = std::sync::Mutex::new(Vec::new());
     let (ees, order, tsv_out, fa_out) = cmd_eesort(
         eesort_query.to_str().unwrap(),
         eesort_db.to_str().unwrap(),
         eesort_fa.to_str().unwrap(),
         eesort_tsv.to_str().unwrap(),
         |query_label, db_label, path| {
-            eesort_calls.push((query_label.to_string(), db_label.to_string()));
+            eesort_calls
+                .lock()
+                .unwrap()
+                .push((query_label.to_string(), db_label.to_string()));
             *path = "BBBB".to_string();
             if query_label == "q1" {
                 match db_label {
@@ -9342,7 +11147,7 @@ fn ea_cluster_mfa_helpers_match_cpp_cluster_order() {
     assert_eq!(ees, vec![0.125, 10.0, 1234.0]);
     assert_eq!(order, vec![2, 1, 0]);
     assert_eq!(
-        eesort_calls,
+        *eesort_calls.lock().unwrap(),
         vec![
             ("q1".to_string(), "db_a".to_string()),
             ("q2".to_string(), "db_a".to_string()),
@@ -9356,6 +11161,73 @@ fn ea_cluster_mfa_helpers_match_cpp_cluster_order() {
     assert_eq!(std::fs::read_to_string(&eesort_tsv).unwrap(), tsv_out);
     assert_eq!(fa_out, ">db_c\nWYVV\n>db_b\nPQRS\n>db_a\nEFIL\n");
     assert_eq!(std::fs::read_to_string(&eesort_fa).unwrap(), fa_out);
+    let restored_after_eesort = get_global_input_ms();
+    assert_eq!(restored_after_eesort.seqs.len(), 1);
+    assert_eq!(restored_after_eesort.seqs[0].label, "prior_global");
+
+    let eesort_log =
+        std::env::temp_dir().join(format!("muscle_rs_eesort_log_{}.txt", std::process::id()));
+    set_log_file_name(eesort_log.to_str().unwrap());
+    let (tied_ees, tied_order, tied_tsv, tied_fa) = cmd_eesort(
+        eesort_query.to_str().unwrap(),
+        eesort_db.to_str().unwrap(),
+        "",
+        "",
+        |_query_label, _db_label, path| {
+            *path = "BBBB".to_string();
+            0.5
+        },
+    );
+    set_log_file_name("");
+    assert_eq!(tied_ees, vec![0.5, 0.5, 0.5]);
+    // C++ QuickSortOrderDesc is unstable; for three tied EA values its
+    // Hoare partition reverses the input indexes.
+    assert_eq!(tied_order, vec![2, 1, 0]);
+    assert_eq!(tied_tsv, "0.5\tdb_c\n0.5\tdb_b\n0.5\tdb_a\n");
+    assert_eq!(tied_fa, ">db_c\nWYVV\n>db_b\nPQRS\n>db_a\nEFIL\n");
+    let restored_after_tied_eesort = get_global_input_ms();
+    assert_eq!(restored_after_tied_eesort.seqs.len(), 1);
+    assert_eq!(restored_after_tied_eesort.seqs[0].label, "prior_global");
+    let eesort_log_text = std::fs::read_to_string(&eesort_log).unwrap();
+    assert!(eesort_log_text.contains("100.0% Calculating\n"));
+    assert!(eesort_log_text.contains("100.0% Writing \n"));
+    std::fs::remove_file(&eesort_log).unwrap();
+    {
+        let mut argv = G_ARGV.lock().unwrap();
+        argv.clear();
+        argv.extend([
+            "muscle".to_string(),
+            "-threads".to_string(),
+            "2".to_string(),
+        ]);
+    }
+    let (threaded_ees, threaded_order, threaded_tsv, threaded_fa) = cmd_eesort(
+        eesort_query.to_str().unwrap(),
+        eesort_db.to_str().unwrap(),
+        "",
+        "",
+        |query_label, db_label, path| {
+            *path = "BBBB".to_string();
+            if query_label == "q1" && db_label == "db_a" {
+                3.0
+            } else if query_label == "q1" && db_label == "db_b" {
+                2.0
+            } else if query_label == "q1" && db_label == "db_c" {
+                1.0
+            } else {
+                -1.0
+            }
+        },
+    );
+    assert_eq!(threaded_ees, vec![3.0, 2.0, 1.0]);
+    assert_eq!(threaded_order, vec![0, 1, 2]);
+    assert_eq!(threaded_tsv, "3\tdb_a\n2\tdb_b\n1\tdb_c\n");
+    assert_eq!(threaded_fa, ">db_a\nEFIL\n>db_b\nPQRS\n>db_c\nWYVV\n");
+    {
+        let mut argv = G_ARGV.lock().unwrap();
+        argv.clear();
+        argv.extend(saved_argv_for_eesort);
+    }
     std::fs::remove_file(&eesort_query).unwrap();
     std::fs::remove_file(&eesort_db).unwrap();
     std::fs::remove_file(&eesort_fa).unwrap();
@@ -10215,18 +12087,28 @@ fn tree_leaf_and_neighbor_accessors_match_cpp_slots() {
     assert_eq!(get_shrubs(&created, 1), vec![0, 1, 2]);
     assert_eq!(get_shrubs(&created, 2), vec![2, 3]);
     assert_eq!(get_shrubs(&created, 3), vec![4]);
+    let mut appended_shrubs = vec![99];
+    get_shrubs_into(&created, 2, &mut appended_shrubs);
+    assert_eq!(appended_shrubs, vec![99, 2, 3]);
     let shrub_tree_file =
         std::env::temp_dir().join(format!("muscle_rs_cmd_shrub_{}.nwk", std::process::id()));
+    let shrub_log_file =
+        std::env::temp_dir().join(format!("muscle_rs_cmd_shrub_{}.log", std::process::id()));
     tree_to_file_l13(&created, shrub_tree_file.to_str().unwrap());
+    set_log_file_name(shrub_log_file.to_str().unwrap());
     let (cmd_shrub_lcas, cmd_pruned, cmd_shrub_log) =
         cmd_shrub(shrub_tree_file.to_str().unwrap(), Some(2));
+    set_log_file_name("");
     assert_eq!(cmd_shrub_lcas.len(), 2);
     assert_eq!(cmd_pruned.node_count, 3);
     assert!(cmd_shrub_log.contains("leaf-a"));
     assert!(cmd_shrub_log.contains("leaf-b"));
     assert!(cmd_shrub_log.contains("leaf-c"));
     assert!(cmd_shrub_log.contains("[leaf-a+leaf-b] [+leaf-c]"));
+    let cmd_shrub_global_log = std::fs::read_to_string(&shrub_log_file).unwrap();
+    assert_eq!(cmd_shrub_global_log, cmd_shrub_log);
     std::fs::remove_file(&shrub_tree_file).unwrap();
+    std::fs::remove_file(&shrub_log_file).unwrap();
     let mut input_seqs = MultiSequence::default();
     multi_sequence_from_strings(
         &mut input_seqs,
@@ -10804,6 +12686,7 @@ fn tree_leaf_and_neighbor_accessors_match_cpp_slots() {
 
 #[test]
 fn upgma5_label_lifecycle_matches_cpp_maps() {
+    let _global_guard = GLOBAL_STATE_TEST_LOCK.lock().unwrap();
     let mut upgma = UPGMA5::default();
     let labels = vec!["a".to_string(), "b".to_string(), "c".to_string()];
     let dist_mx = vec![
@@ -10819,7 +12702,14 @@ fn upgma5_label_lifecycle_matches_cpp_maps() {
     assert_eq!(upgma5_get_label_index(&upgma, "a"), 0);
     assert_eq!(upgma5_get_label_index(&upgma, "c"), 2);
     let mut run_tree = Tree::default();
+    let upgma_log =
+        std::env::temp_dir().join(format!("muscle_rs_upgma5_log_{}.txt", std::process::id()));
+    set_log_file_name(upgma_log.to_str().unwrap());
     upgma5_run_l75(&mut upgma, "avg", &mut run_tree);
+    set_log_file_name("");
+    let upgma_log_text = std::fs::read_to_string(&upgma_log).unwrap();
+    assert!(upgma_log_text.contains("100.0% UPGMA5\n"));
+    std::fs::remove_file(&upgma_log).unwrap();
     assert_eq!(run_tree.node_count, 5);
     assert_eq!(run_tree.root_node_index, 4);
     assert_eq!(run_tree.neighbor2[3], 0);
@@ -10857,6 +12747,11 @@ fn upgma5_label_lifecycle_matches_cpp_maps() {
         vec![0.2, 0.0, 0.5],
         vec![0.8, 0.5, 0.0],
     ];
+    let scale_log = std::env::temp_dir().join(format!(
+        "muscle_rs_upgma5_scale_log_{}.txt",
+        std::process::id()
+    ));
+    set_log_file_name(scale_log.to_str().unwrap());
     upgma5_init(&mut sim, &labels, &sim_mx);
     upgma5_scale_dist_mx(&mut sim, true);
     assert!((sim.dist_mx[1][0] - 10.0).abs() < 1e-6);
@@ -10867,9 +12762,14 @@ fn upgma5_label_lifecycle_matches_cpp_maps() {
     let mut dist = UPGMA5::default();
     upgma5_init(&mut dist, &labels, &sim_mx);
     upgma5_scale_dist_mx(&mut dist, false);
+    set_log_file_name("");
     assert!((dist.dist_mx[1][0] - 0.0).abs() < 1e-6);
     assert!((dist.dist_mx[2][0] - 10.0).abs() < 1e-6);
     assert!((dist.dist_mx[2][1] - 5.0).abs() < 1e-6);
+    let scale_log_text = std::fs::read_to_string(&scale_log).unwrap();
+    assert!(scale_log_text.contains("Re-scaling, min 0.2, max 0.8\n"));
+    assert!(scale_log_text.contains("Scaled min dist 0, max 10. scale\n"));
+    std::fs::remove_file(&scale_log).unwrap();
 
     let dist_file =
         std::env::temp_dir().join(format!("muscle_rs_upgma5_dist_{}.tsv", std::process::id()));
@@ -10953,6 +12853,9 @@ fn upgma5_label_lifecycle_matches_cpp_maps() {
     std::fs::write(&cmd_msa_file, b">a\nEFIL\n>b\nEFKL\n>c\nPQRS\n").unwrap();
     let mut msa_dist_calls = Vec::new();
     let expected_msa_tree = expected_cmd_tree.clone();
+    let cmd_msa_log_file =
+        std::env::temp_dir().join(format!("muscle_rs_upgma5_msa_{}.log", std::process::id()));
+    set_log_file_name(cmd_msa_log_file.to_str().unwrap());
     let (cmd_msa_u, cmd_msa_tree, cmd_msa_log) = cmd_upgma5_msa(
         cmd_msa_file.to_str().unwrap(),
         cmd_msa_tree_file.to_str().unwrap(),
@@ -10975,7 +12878,12 @@ fn upgma5_label_lifecycle_matches_cpp_maps() {
             expected_msa_tree.clone()
         },
     );
+    set_log_file_name("");
     assert_eq!(cmd_msa_log, "UPGMA5(min)\nAll done.\n");
+    let cmd_msa_global_log = std::fs::read_to_string(&cmd_msa_log_file).unwrap();
+    assert!(cmd_msa_global_log.contains("100.0% Protdists\n"));
+    assert!(cmd_msa_global_log.contains("UPGMA5(min)\n"));
+    assert!(cmd_msa_global_log.ends_with("All done.\n"));
     assert_eq!(
         msa_dist_calls,
         vec![
@@ -10994,6 +12902,7 @@ fn upgma5_label_lifecycle_matches_cpp_maps() {
     );
     std::fs::remove_file(&cmd_msa_file).unwrap();
     std::fs::remove_file(&cmd_msa_tree_file).unwrap();
+    std::fs::remove_file(&cmd_msa_log_file).unwrap();
 
     assert_eq!(avg(2.0, 6.0), 4.0);
     let log_upgma = UPGMA5 {
@@ -11139,6 +13048,67 @@ fn pprog_state_helpers_match_cpp_indexing() {
         vec!["AC-".to_string(), "-GT".to_string()]
     );
 
+    let mut pprog3_input3 = MultiSequence::default();
+    multi_sequence_from_strings(
+        &mut pprog3_input3,
+        &["a".to_string(), "b".to_string(), "c".to_string()],
+        &["AA".to_string(), "CC".to_string(), "GG".to_string()],
+    );
+    let mut pprog3_tree3 = Tree::default();
+    tree_create(
+        &mut pprog3_tree3,
+        3,
+        1,
+        &[0, 3],
+        &[1, 2],
+        &[1.0, 1.0],
+        &[1.0, 1.0],
+        &[0, 1, 2],
+        &["a".to_string(), "b".to_string(), "c".to_string()],
+    );
+    let mut pp3_run3 = PProg3 {
+        ap: Some(M3AlnParams {
+            subst_mx_letter: [[0.0; 20]; 20],
+            gap_open: -3.0,
+            ready: true,
+            ..M3AlnParams::default()
+        }),
+        ..PProg3::default()
+    };
+    let mut pprog3_nw_paths = Vec::new();
+    let mut pprog3_align_calls = Vec::new();
+    p_prog3_run(
+        &mut pp3_run3,
+        &pprog3_input3,
+        &[0.2, 0.3, 0.5],
+        &pprog3_tree3,
+        |_cm, left, right| {
+            pprog3_nw_paths.push((left.pps.len(), right.pps.len()));
+            "MM".to_string()
+        },
+        |left, left_weight, right, right_weight, _subst, gap_open, path| {
+            pprog3_align_calls.push((
+                left.pps.len(),
+                left_weight,
+                right.pps.len(),
+                right_weight,
+                gap_open,
+                path.to_string(),
+            ));
+            let mut prof = Profile3::default();
+            prof.pps = vec![ProfPos3::default(); left.pps.len().max(right.pps.len())];
+            prof
+        },
+    );
+    assert_eq!(pprog3_nw_paths, vec![(2, 2), (2, 2)]);
+    assert_eq!(
+        pprog3_align_calls,
+        vec![(2, 0.2, 2, 0.3, -3.0, "MM".to_string())]
+    );
+    assert_eq!(pp3_run3.node_to_sum_input_weights[3], 0.5);
+    assert_eq!(pp3_run3.node_to_sum_input_weights[4], 1.0);
+    assert_eq!(pp3_run3.msa.seqs.len(), 3);
+
     let load_dir =
         std::env::temp_dir().join(format!("muscle_rs_pprog_load_{}", std::process::id()));
     std::fs::create_dir_all(&load_dir).unwrap();
@@ -11262,6 +13232,7 @@ fn pprog_state_helpers_match_cpp_indexing() {
         pprog_list.to_str().unwrap(),
         pprog_out.to_str().unwrap(),
         Some(pprog_tree.to_str().unwrap()),
+        None,
         Some(17),
         |label, msa1, msa2, pair_count, path| {
             pprog_calls.push((
@@ -11309,6 +13280,8 @@ fn pprog_state_helpers_match_cpp_indexing() {
     let pprog2_list = pprog2_dir.join("list.txt");
     let pprog2_joins = pprog2_dir.join("joins.tsv");
     let pprog2_out = pprog2_dir.join("out.fa");
+    let pprog2_savedir = pprog2_dir.join("saved");
+    std::fs::create_dir_all(&pprog2_savedir).unwrap();
     std::fs::write(&pprog2_a, b">l2\nAA\n").unwrap();
     std::fs::write(&pprog2_b, b">r2\nCC\n").unwrap();
     std::fs::write(
@@ -11323,6 +13296,7 @@ fn pprog_state_helpers_match_cpp_indexing() {
         pprog2_joins.to_str().unwrap(),
         pprog2_out.to_str().unwrap(),
         Some(19),
+        Some(pprog2_savedir.to_str().unwrap()),
         |label, msa1, msa2, pair_count, path| {
             pprog2_calls.push((
                 label.to_string(),
@@ -11348,11 +13322,17 @@ fn pprog_state_helpers_match_cpp_indexing() {
         std::fs::read_to_string(&pprog2_out).unwrap(),
         ">l2\nAA\n>r2\nCC\n"
     );
+    assert_eq!(
+        std::fs::read_to_string(pprog2_savedir.join("join0")).unwrap(),
+        ">l2\nAA\n>r2\nCC\n"
+    );
     std::fs::remove_file(&pprog2_a).unwrap();
     std::fs::remove_file(&pprog2_b).unwrap();
     std::fs::remove_file(&pprog2_list).unwrap();
     std::fs::remove_file(&pprog2_joins).unwrap();
     std::fs::remove_file(&pprog2_out).unwrap();
+    std::fs::remove_file(pprog2_savedir.join("join0")).unwrap();
+    std::fs::remove_dir(&pprog2_savedir).unwrap();
     std::fs::remove_dir(&pprog2_dir).unwrap();
 
     p_prog_set_msa_label(&mut pp, 3, "join1");
@@ -11437,6 +13417,34 @@ fn pprog_state_helpers_match_cpp_indexing() {
             .collect::<Vec<_>>(),
         vec!["a", "b"]
     );
+
+    let savedir_root =
+        std::env::temp_dir().join(format!("muscle_rs_pprog_savedir_{}", std::process::id()));
+    std::fs::create_dir_all(&savedir_root).unwrap();
+    let mut pp_savedir = PProg::default();
+    p_prog_set_ms_as(
+        &mut pp_savedir,
+        &[msa1.clone(), msa2.clone()],
+        &["left".to_string(), "right".to_string()],
+    );
+    pp_savedir.join_count = 1;
+    pp_savedir.node_count = 3;
+    pp_savedir.path_mx = vec![vec![String::new(); 3]; 3];
+    pp_savedir.path_mx[0][1] = "BB".to_string();
+    pp_savedir.pending = vec![0, 1];
+    pp_savedir.join_index = 0;
+    p_prog_join_by_precomputed_path_with_savedir(
+        &mut pp_savedir,
+        0,
+        1,
+        Some(savedir_root.to_str().unwrap()),
+    );
+    assert_eq!(
+        std::fs::read_to_string(savedir_root.join("join0")).unwrap(),
+        ">a\nAA\n>b\nCC\n"
+    );
+    std::fs::remove_file(savedir_root.join("join0")).unwrap();
+    std::fs::remove_dir(&savedir_root).unwrap();
 
     pp_join.join_index = 1;
     let mut new_pending_calls = Vec::new();
@@ -11557,6 +13565,100 @@ fn pprog_state_helpers_match_cpp_indexing() {
     assert_eq!(pp_align.join_msa_indexes1, vec![3]);
     assert_eq!(pp_align.join_msa_indexes2, vec![2]);
 
+    set_global_input_ms(&msa_a);
+    let mut pp_permissive = PProg::default();
+    p_prog_set_ms_as(
+        &mut pp_permissive,
+        &[msa_a.clone(), msa_c.clone()],
+        &labels[..2],
+    );
+    pp_permissive.input_msa_count = 2;
+    pp_permissive.join_count = 1;
+    pp_permissive.node_count = 3;
+    p_prog_align_and_join(
+        &mut pp_permissive,
+        0,
+        1,
+        |_label, _msa1, _msa2, _pair_count, path| {
+            *path = "BB".to_string();
+            1.0
+        },
+    );
+    assert_eq!(
+        pp_permissive.msas[2]
+            .as_ref()
+            .unwrap()
+            .seqs
+            .iter()
+            .map(|seq| seq.label.as_str())
+            .collect::<Vec<_>>(),
+        vec!["aa", "cc"]
+    );
+
+    let mut pp_strict_duplicate_join = PProg::default();
+    p_prog_set_ms_as(
+        &mut pp_strict_duplicate_join,
+        &[msa_a.clone(), msa_a.clone()],
+        &labels[..2],
+    );
+    pp_strict_duplicate_join.input_msa_count = 2;
+    pp_strict_duplicate_join.join_count = 1;
+    pp_strict_duplicate_join.node_count = 3;
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            p_prog_align_and_join_strict_with_savedir(
+                &mut pp_strict_duplicate_join,
+                0,
+                1,
+                None,
+                |_label, _msa1, _msa2, _pair_count, path| {
+                    *path = "BB".to_string();
+                    1.0
+                },
+            );
+        }))
+        .is_err()
+    );
+
+    let mut strict_global = MultiSequence::default();
+    multi_sequence_from_strings(
+        &mut strict_global,
+        &["aa".to_string(), "cc".to_string()],
+        &["AA".to_string(), "GG".to_string()],
+    );
+    set_global_input_ms(&strict_global);
+    let before_same_seq_checks = get_assert_same_seqs_ok_count();
+    let mut pp_strict = PProg::default();
+    p_prog_set_ms_as(
+        &mut pp_strict,
+        &[msa_a.clone(), msa_c.clone()],
+        &labels[..2],
+    );
+    pp_strict.input_msa_count = 2;
+    pp_strict.join_count = 1;
+    pp_strict.node_count = 3;
+    p_prog_align_and_join_strict_with_savedir(
+        &mut pp_strict,
+        0,
+        1,
+        None,
+        |_label, _msa1, _msa2, _pair_count, path| {
+            *path = "BB".to_string();
+            1.0
+        },
+    );
+    assert_eq!(get_assert_same_seqs_ok_count(), before_same_seq_checks + 2);
+    assert_eq!(
+        pp_strict.msas[2]
+            .as_ref()
+            .unwrap()
+            .seqs
+            .iter()
+            .map(|seq| seq.label.as_str())
+            .collect::<Vec<_>>(),
+        vec!["aa", "cc"]
+    );
+
     let mut pp_tree = PProg::default();
     p_prog_set_ms_as(&mut pp_tree, &[msa_a.clone(), msa_c.clone()], &labels[..2]);
     pp_tree.target_pair_count = 5;
@@ -11640,6 +13742,79 @@ fn pprog_state_helpers_match_cpp_indexing() {
         ">aa\nAA\n>cc\nGG\n"
     );
 
+    let cmd_tree_mega = cmd_tree_dir.join("input.mega");
+    let cmd_tree_mega_out = cmd_tree_dir.join("mega_out.fa");
+    std::fs::write(
+        &cmd_tree_mega,
+        concat!(
+            "mega\t1\t2\t-4.5\t-0.6\n",
+            "0\tAA\t3\t2.0\n",
+            "freqs\t0.5\t0\t0.5\n",
+            "0\t1\n",
+            "1\t0.25\t0.75\n",
+            "2\t0\t0.2\t0.8\n",
+            "logoddsmx\n",
+            "0\tA\t1.0\n",
+            "1\tC\t2.0\t3.0\n",
+            "2\tD\t4.0\t5.0\t6.0\n",
+            "chain\t0\tp0\t2\n",
+            "0\t0\tA\n",
+            "0\t1\tC\n",
+            "chain\t1\tp1\t2\n",
+            "1\t0\tA\n",
+            "1\t1\tC\n",
+        ),
+    )
+    .unwrap();
+    let mut cmd_tree_mega_label_to_index = std::collections::HashMap::new();
+    cmd_tree_mega_label_to_index.insert("p0".to_string(), 0);
+    cmd_tree_mega_label_to_index.insert("p1".to_string(), 1);
+    let mut cmd_tree_mega_tree = Tree::default();
+    make_guide_tree_from_join_order(
+        &[0],
+        &[1],
+        &cmd_tree_mega_label_to_index,
+        &mut cmd_tree_mega_tree,
+    );
+    tree_to_file_l13(&cmd_tree_mega_tree, cmd_tree_tree.to_str().unwrap());
+    *MEGA_STATE.lock().unwrap() = MegaState::default();
+    MEGA_LOADED.store(false, std::sync::atomic::Ordering::Relaxed);
+    let mut cmd_tree_mega_calls = Vec::new();
+    let cmd_tree_mega_pp = cmd_pprog_tree(
+        cmd_tree_mega.to_str().unwrap(),
+        cmd_tree_tree.to_str().unwrap(),
+        cmd_tree_mega_out.to_str().unwrap(),
+        Some(4),
+        |label, msa1, msa2, pair_count, path| {
+            cmd_tree_mega_calls.push((
+                label.to_string(),
+                msa1.seqs[0].label.clone(),
+                msa2.seqs[0].label.clone(),
+                pair_count,
+            ));
+            *path = "BB".to_string();
+            1.0
+        },
+    );
+    assert_eq!(
+        cmd_tree_mega_calls,
+        vec![(
+            "Join 1 / 1".to_string(),
+            "p0".to_string(),
+            "p1".to_string(),
+            4
+        )]
+    );
+    assert_eq!(cmd_tree_mega_pp.join_msa_indexes1, vec![0]);
+    assert_eq!(
+        sequence_get_seq_as_string(&get_global_input_seq_by_label("p0")),
+        "AC"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&cmd_tree_mega_out).unwrap(),
+        ">p0\nAC\n>p1\nAC\n"
+    );
+
     let cmd_t_list = cmd_tree_dir.join("list.txt");
     let cmd_t_a = cmd_tree_dir.join("alpha.fa");
     let cmd_t_b = cmd_tree_dir.join("beta.fa");
@@ -11682,6 +13857,30 @@ fn pprog_state_helpers_match_cpp_indexing() {
             .unwrap()
             .contains("alpha")
     );
+    let cmd_t_blank_list = cmd_tree_dir.join("list_blank.txt");
+    std::fs::write(
+        &cmd_t_blank_list,
+        format!("{}\n\n{}\n", cmd_t_a.display(), cmd_t_b.display()),
+    )
+    .unwrap();
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = cmd_pprogt(
+                cmd_t_blank_list.to_str().unwrap(),
+                cmd_tree_tree.to_str().unwrap(),
+                cmd_t_out.to_str().unwrap(),
+                None,
+                None,
+                |_label, _msa1, _msa2, _pair_count, path| {
+                    *path = "BB".to_string();
+                    1.0
+                },
+            );
+        }))
+        .is_err()
+    );
+    *MEGA_STATE.lock().unwrap() = MegaState::default();
+    MEGA_LOADED.store(false, std::sync::atomic::Ordering::Relaxed);
     std::fs::remove_dir_all(&cmd_tree_dir).unwrap();
 
     pp.join_msa_indexes1 = vec![0, 3];
@@ -12016,12 +14215,19 @@ fn confidence_chars_and_bit_traceback_match_cpp_tables() {
 
     let sw_cmd_in =
         std::env::temp_dir().join(format!("muscle_rs_cmd_sw_{}.fa", std::process::id()));
+    let sw_cmd_progress =
+        std::env::temp_dir().join(format!("muscle_rs_cmd_sw_{}.log", std::process::id()));
     std::fs::write(&sw_cmd_in, b">a\nCAC\n>b\nDAD\n").unwrap();
+    set_log_file_name(sw_cmd_progress.to_str().unwrap());
     let sw_cmd_log = cmd_sw(sw_cmd_in.to_str().unwrap());
+    set_log_file_name("");
     assert!(sw_cmd_log.contains("a"));
     assert!(sw_cmd_log.contains("b"));
     assert!(sw_cmd_log.ends_with("a b 1.96\n"));
+    let sw_cmd_progress_text = std::fs::read_to_string(&sw_cmd_progress).unwrap();
+    assert!(sw_cmd_progress_text.ends_with("100.0% Aligning\n"));
     std::fs::remove_file(&sw_cmd_in).unwrap();
+    std::fs::remove_file(&sw_cmd_progress).unwrap();
 
     let swdist_in =
         std::env::temp_dir().join(format!("muscle_rs_cmd_swdistmx_{}.fa", std::process::id()));
@@ -12321,8 +14527,20 @@ fn cmp_msa_colors_and_pfam_line_parser_match_cpp_logic() {
     assert_eq!(alloc_bench.m3s.len(), 3);
     assert_eq!(alloc_bench.qss.len(), 3);
     assert!(alloc_bench.qs2s.is_empty());
+    assert!(alloc_bench.m3s.iter().all(|m3| m3.ap.is_some()));
+    alloc_bench.ap = Some(M3AlnParams {
+        ready: true,
+        linkage: "bench-reuse".to_string(),
+        ..M3AlnParams::default()
+    });
     bench_alloc_threads(&mut alloc_bench, false);
     assert_eq!(alloc_bench.m3s.len(), 3);
+    assert!(
+        alloc_bench
+            .m3s
+            .iter()
+            .all(|m3| m3.ap.as_ref().unwrap().linkage == "bench-reuse")
+    );
 
     let mut alloc_q2_bench = Bench {
         ap: Some(M3AlnParams {
@@ -12402,7 +14620,24 @@ fn cmp_msa_colors_and_pfam_line_parser_match_cpp_logic() {
     std::fs::write(batch_in.join("case1.fa"), b">s1\nA-C\n>s2\nAG-\n").unwrap();
     std::fs::write(batch_in.join("case2.fa"), b">t1\n-PQ\n>t2\nR-S\n").unwrap();
 
-    let mut batch_calls = Vec::new();
+    let saved_argv_for_batch = G_ARGV.lock().unwrap().clone();
+    {
+        let mut argv = G_ARGV.lock().unwrap();
+        argv.clear();
+        argv.extend([
+            "muscle".to_string(),
+            "-threads".to_string(),
+            "2".to_string(),
+        ]);
+    }
+    let batch_log = std::env::temp_dir().join(format!(
+        "muscle_rs_cmd_batch_log_{}.txt",
+        std::process::id()
+    ));
+    set_log_file_name(batch_log.to_str().unwrap());
+    set_quiet(false);
+    let batch_calls = std::sync::Mutex::new(Vec::new());
+    let batch_m3_ptrs = std::sync::Mutex::new(Vec::new());
     let batch_ap = M3AlnParams {
         ready: true,
         linkage: "avg".to_string(),
@@ -12413,8 +14648,13 @@ fn cmp_msa_colors_and_pfam_line_parser_match_cpp_logic() {
         batch_in.to_str().unwrap(),
         batch_out.to_str().unwrap(),
         &batch_ap,
-        |_m3, ap, ms| {
-            batch_calls.push((
+        |m3, ap, ms| {
+            assert!(get_quiet());
+            batch_m3_ptrs
+                .lock()
+                .unwrap()
+                .push(m3 as *mut Muscle3 as usize);
+            batch_calls.lock().unwrap().push((
                 ap.linkage.clone(),
                 sequence_get_seq_as_string(&ms.seqs[0]),
                 sequence_get_seq_as_string(&ms.seqs[1]),
@@ -12422,6 +14662,9 @@ fn cmp_msa_colors_and_pfam_line_parser_match_cpp_logic() {
             ms.clone()
         },
     );
+    set_log_file_name("");
+    let mut batch_calls = batch_calls.lock().unwrap().clone();
+    batch_calls.sort();
     assert_eq!(
         batch_calls,
         vec![
@@ -12429,6 +14672,17 @@ fn cmp_msa_colors_and_pfam_line_parser_match_cpp_logic() {
             ("avg".to_string(), "PQ".to_string(), "RS".to_string()),
         ]
     );
+    let batch_m3_ptrs = batch_m3_ptrs.lock().unwrap();
+    assert_eq!(batch_m3_ptrs.len(), 2);
+    assert_ne!(batch_m3_ptrs[0], batch_m3_ptrs[1]);
+    assert!(!get_quiet());
+    {
+        let mut argv = G_ARGV.lock().unwrap();
+        argv.clear();
+        argv.extend(saved_argv_for_batch);
+    }
+    let batch_log_text = std::fs::read_to_string(&batch_log).unwrap();
+    assert!(batch_log_text.contains("100.0% Aligning 2 sets "));
     assert_eq!(batch_outputs.len(), 2);
     assert_eq!(
         std::fs::read_to_string(batch_out.join("case1.fa")).unwrap(),
@@ -12438,6 +14692,7 @@ fn cmp_msa_colors_and_pfam_line_parser_match_cpp_logic() {
         std::fs::read_to_string(batch_out.join("case2.fa")).unwrap(),
         ">t1\nPQ\n>t2\nRS\n"
     );
+    std::fs::remove_file(&batch_log).unwrap();
     std::fs::remove_dir_all(&batch_root).unwrap();
 
     let cmd_bench_tsv = bench_dir.join("cmd_bench.tsv");
@@ -12510,21 +14765,36 @@ fn cmp_msa_colors_and_pfam_line_parser_match_cpp_logic() {
         muscle3_out.to_str().unwrap(),
         None,
         false,
-        &run_ap,
-        |_ap, input| {
+        |ap, is_nucleo| {
+            assert!(is_nucleo);
+            *ap = run_ap.clone();
+        },
+        |m3, ap, input| {
+            m3.ap_addr = Some(ap as *const M3AlnParams as usize);
+            m3.ap = Some(ap.clone());
+            m3.input_seqs_addr = Some(input as *const MultiSequence as usize);
+            m3.input_seqs = Some(input.clone());
             muscle3_calls.push((
                 sequence_get_seq_as_string(&input.seqs[0]),
                 sequence_get_seq_as_string(&input.seqs[1]),
             ));
-            (input.clone(), Tree::default())
+            m3.final_msa = Some(input.clone());
+            m3.final_msa_addr =
+                Some(m3.final_msa.as_ref().unwrap() as *const MultiSequence as usize);
+            input.clone()
         },
-        |_ap, _input| panic!("RunRO should not be called"),
+        |_m3, _ap, _input| panic!("RunRO should not be called"),
     );
     assert_eq!(
         muscle3_calls,
         vec![("ACGT".to_string(), "A-GT".to_string())]
     );
     assert!(muscle3_tree.is_some());
+    assert_eq!(get_gsi_by_label("m2"), 1);
+    assert_eq!(
+        sequence_get_seq_as_string(&get_global_input_seq_by_label("m1")),
+        "ACGT"
+    );
     assert_eq!(multi_sequence_get_col_count(&muscle3_msa), 4);
     assert_eq!(
         std::fs::read_to_string(&muscle3_out).unwrap(),
@@ -12537,9 +14807,18 @@ fn cmp_msa_colors_and_pfam_line_parser_match_cpp_logic() {
         muscle3_ro_out.to_str().unwrap(),
         None,
         true,
-        &run_ap,
-        |_ap, _input| panic!("Run should not be called"),
-        |_ap, input| input.clone(),
+        |ap, is_nucleo| {
+            assert!(is_nucleo);
+            *ap = run_ap.clone();
+        },
+        |_m3, _ap, _input| panic!("Run should not be called"),
+        |m3, ap, input| {
+            assert_eq!(m3.ap_addr, Some(ap as *const M3AlnParams as usize));
+            m3.final_msa = Some(input.clone());
+            m3.final_msa_addr =
+                Some(m3.final_msa.as_ref().unwrap() as *const MultiSequence as usize);
+            input.clone()
+        },
     );
     assert!(muscle3_ro_tree.is_none());
     assert_eq!(multi_sequence_get_col_count(&muscle3_ro_msa), 4);
@@ -12675,21 +14954,24 @@ fn cmp_msa_colors_and_pfam_line_parser_match_cpp_logic() {
     }
     let selectpfams_tsv = ".tmp/pfam_regions_select_cmd.tsv";
     let selectpfams_out = ".tmp/pfam_regions_select_cmd.out";
+    let selectpfams_log = ".tmp/pfam_regions_select_cmd.log";
     std::fs::write(
         selectpfams_tsv,
         "UPA\tSPA\tPF1\t1\t45\t100\nUPA\tSPA\tPF2\t46\t95\t100\nUPB\tSPB\tPF1\t1\t20\t100\n",
     )
     .unwrap();
+    set_log_file_name(selectpfams_log);
     let selected = cmd_newbench_selectpfams(selectpfams_tsv, selectpfams_out);
+    set_log_file_name("");
     assert_eq!(selected, "UPA\tSPA\t100\t2\tPF1\t1\t45\tPF2\t46\t95\n");
     assert_eq!(std::fs::read_to_string(selectpfams_out).unwrap(), selected);
-    {
-        let mut state = NEWBENCH_SELECT_PFAMS_STATE.lock().unwrap();
-        *state = NewbenchSelectPfamsState::default();
-    }
+    let selectpfams_log_text = std::fs::read_to_string(selectpfams_log).unwrap();
+    assert!(selectpfams_log_text.contains("1 selected (50.0%)"));
+    assert!(selectpfams_log_text.ends_with("1 / 2 selected (50.0%)"));
     assert_eq!(cmd_newbench_selectpfams(selectpfams_tsv, ""), selected);
     std::fs::remove_file(selectpfams_tsv).unwrap();
     std::fs::remove_file(selectpfams_out).unwrap();
+    std::fs::remove_file(selectpfams_log).unwrap();
     {
         let mut state = NEWBENCH_SELECT_PFAMS_STATE.lock().unwrap();
         *state = NewbenchSelectPfamsState::default();
@@ -12773,6 +15055,74 @@ fn cmp_msa_colors_and_pfam_line_parser_match_cpp_logic() {
         ("PF00002".to_string(), "PF00003".to_string())
     );
     assert_eq!(set_before_after_p_fs(&aln2), 1.0);
+    let after2_pfix = get_p_fix("PF00004", true);
+    {
+        let mut state = NEWBENCH_SELECT_PFAMS_STATE.lock().unwrap();
+        state.primary_pf = "PF00001".to_string();
+        state.primary_pfix = primary_pfix;
+        state.pf_to_pfix.insert("PF00004".to_string(), after2_pfix);
+        state.unique_ups = vec!["BA1".to_string(), "BA2".to_string(), "BA3".to_string()];
+        state.up_to_upix.clear();
+        state.up_to_upix.insert("BA1".to_string(), 0);
+        state.up_to_upix.insert("BA2".to_string(), 1);
+        state.up_to_upix.insert("BA3".to_string(), 2);
+        state.upix_to_regionixs = vec![vec![0, 1, 2], vec![3, 4, 5], vec![6, 7, 8]];
+        state.ups = vec![
+            "BA1".to_string(),
+            "BA1".to_string(),
+            "BA1".to_string(),
+            "BA2".to_string(),
+            "BA2".to_string(),
+            "BA2".to_string(),
+            "BA3".to_string(),
+            "BA3".to_string(),
+            "BA3".to_string(),
+        ];
+        state.pfs = vec![
+            "PF00002".to_string(),
+            "PF00001".to_string(),
+            "PF00003".to_string(),
+            "PF00002".to_string(),
+            "PF00001".to_string(),
+            "PF00004".to_string(),
+            "PF00002".to_string(),
+            "PF00001".to_string(),
+            "PF00004".to_string(),
+        ];
+        state.aln_regionix_vec = vec![vec![0, 1, 2], vec![3, 4, 5], vec![6, 7, 8]];
+    }
+    let mut before_after_aln = MultiSequence::default();
+    multi_sequence_from_strings(
+        &mut before_after_aln,
+        &["BA1".to_string(), "BA2".to_string(), "BA3".to_string()],
+        &["AC".to_string(), "AC".to_string(), "AC".to_string()],
+    );
+    assert_eq!(set_before_after_p_fs(&before_after_aln), 1.0);
+    {
+        let mut state = NEWBENCH_SELECT_PFAMS_STATE.lock().unwrap();
+        state.unique_ups = vec!["UP1".to_string(), "UP2".to_string()];
+        state.up_to_upix.clear();
+        state.up_to_upix.insert("UP1".to_string(), 0);
+        state.up_to_upix.insert("UP2".to_string(), 1);
+        state.upix_to_regionixs = vec![vec![0, 1, 2], vec![3, 4, 5]];
+        state.ups = vec![
+            "UP1".to_string(),
+            "UP1".to_string(),
+            "UP1".to_string(),
+            "UP2".to_string(),
+            "UP2".to_string(),
+            "UP2".to_string(),
+        ];
+        state.pfs = vec![
+            "PF00002".to_string(),
+            "PF00001".to_string(),
+            "PF00003".to_string(),
+            "PF00002".to_string(),
+            "PF00001".to_string(),
+            "PF00003".to_string(),
+        ];
+        state.aln_regionix_vec = vec![vec![0, 1, 2], vec![3, 4, 5]];
+    }
     set_ungapped_seqs(&aln2);
     set_pos_to_col_vec(&aln2);
     assert_eq!(set_pos_to_p_fix_vec(&aln2), 0);
@@ -12874,6 +15224,8 @@ fn sweep_specs_and_gap_stripping_match_cpp_logic() {
         "set=ok.fa\tq=0.6667\ttc=0.6667\ntestdir={}/\tn=2\tN=1\tM=1\tavgq=0.6667\tavgtc=0.6667\n",
         qscoredir_test_dir.to_string_lossy()
     );
+    let qscoredir_log = qscoredir_root.join("qscoredir.log");
+    set_log_file_name(qscoredir_log.to_str().unwrap());
     assert_eq!(
         cmd_qscoredir(
             qscoredir_names.to_str().unwrap(),
@@ -12884,6 +15236,12 @@ fn sweep_specs_and_gap_stripping_match_cpp_logic() {
         ),
         qscoredir_expected
     );
+    set_log_file_name("");
+    let qscoredir_log_text = std::fs::read_to_string(&qscoredir_log).unwrap();
+    assert!(qscoredir_log_text.contains("100.0%"));
+    assert!(qscoredir_log_text.contains("Q 0.67 TC 0.67"));
+    assert!(qscoredir_log_text.contains("WARNING: Not found"));
+    assert!(qscoredir_log_text.contains("missing.fa"));
     assert_eq!(
         std::fs::read_to_string(&qscoredir_out).unwrap(),
         qscoredir_expected
@@ -13023,6 +15381,7 @@ fn sweep_specs_and_gap_stripping_match_cpp_logic() {
     std::fs::remove_file(qscoredir_ref_dir.join("ok.fa")).unwrap();
     std::fs::remove_file(&qscoredir_names).unwrap();
     std::fs::remove_file(&qscoredir_out).unwrap();
+    std::fs::remove_file(&qscoredir_log).unwrap();
     std::fs::remove_dir(&qscoredir_test_dir).unwrap();
     std::fs::remove_dir(&qscoredir_ref_dir).unwrap();
     std::fs::remove_dir(&qscoredir_root).unwrap();
@@ -13041,6 +15400,13 @@ fn sweep_specs_and_gap_stripping_match_cpp_logic() {
         get_msa_col_aligned_vec(&insert_msa),
         vec![true, true, false, false, true, true, false, false]
     );
+    assert_eq!(
+        get_msa_col_aligned_vec_by(&insert_msa, |msa, col| {
+            get_msa_col_is_aligned_max_gap_fract(msa, col, 0.5)
+        }),
+        vec![true, true, true, true, true, true, true, true]
+    );
+    assert!(!get_msa_col_is_aligned_max_gap_fract(&insert_msa, 2, 0.49));
     let squeezed = squeeze_inserts(&insert_msa);
     assert_eq!(sequence_get_seq_as_string(&squeezed.seqs[0]), "AAxxBBcc");
     assert_eq!(sequence_get_seq_as_string(&squeezed.seqs[1]), "AA.yBBc.");
@@ -13049,8 +15415,11 @@ fn sweep_specs_and_gap_stripping_match_cpp_logic() {
     let squeeze_out =
         std::env::temp_dir().join(format!("muscle_rs_squeeze_out_{}.fa", std::process::id()));
     std::fs::write(&squeeze_in, b">s1\nAAxxBBcc\n>s2\nAA-yBBc-\n").unwrap();
-    let squeezed_cmd =
-        cmd_squeeze_inserts(squeeze_in.to_str().unwrap(), squeeze_out.to_str().unwrap());
+    let squeezed_cmd = cmd_squeeze_inserts(
+        squeeze_in.to_str().unwrap(),
+        squeeze_out.to_str().unwrap(),
+        None,
+    );
     assert_eq!(
         sequence_get_seq_as_string(&squeezed_cmd.seqs[1]),
         "AA.yBBc."
@@ -13058,6 +15427,15 @@ fn sweep_specs_and_gap_stripping_match_cpp_logic() {
     assert_eq!(
         std::fs::read_to_string(&squeeze_out).unwrap(),
         ">s1\nAAxxBBcc\n>s2\nAA.yBBc.\n"
+    );
+    let squeezed_cmd_gap_fract = cmd_squeeze_inserts(
+        squeeze_in.to_str().unwrap(),
+        squeeze_out.to_str().unwrap(),
+        Some(0.5),
+    );
+    assert_eq!(
+        sequence_get_seq_as_string(&squeezed_cmd_gap_fract.seqs[1]),
+        "AA-yBBc-"
     );
     std::fs::remove_file(&squeeze_in).unwrap();
     std::fs::remove_file(&squeeze_out).unwrap();
@@ -13081,12 +15459,39 @@ fn sweep_specs_and_gap_stripping_match_cpp_logic() {
         ">model1\nACDEFGHIKLMn\n>model2\nACDEFGHIKLNp\n"
     );
     assert_eq!(std::fs::read_to_string(&mustang_out).unwrap(), mustang_text);
+    let long_core = "A".repeat(81);
+    std::fs::write(
+        &mustang_in,
+        format!(">long.pdb\n{long_core}\n>long2\n{long_core}\n"),
+    )
+    .unwrap();
+    let long_mustang_text =
+        cmd_mustang_core(mustang_in.to_str().unwrap(), mustang_out.to_str().unwrap());
+    assert_eq!(
+        long_mustang_text,
+        format!(
+            ">long\n{}\nA\n>long2\n{}\nA\n",
+            "A".repeat(80),
+            "A".repeat(80)
+        )
+    );
     std::fs::write(&mustang_in, b">short.pdb\nA-C\n>other\nABC\n").unwrap();
     std::fs::remove_file(&mustang_out).unwrap();
+    let mustang_warning_log = std::env::temp_dir().join(format!(
+        "muscle_rs_mustang_warning_{}.log",
+        std::process::id()
+    ));
+    set_log_file_name(mustang_warning_log.to_str().unwrap());
     let mustang_warning =
         cmd_mustang_core(mustang_in.to_str().unwrap(), mustang_out.to_str().unwrap());
-    assert_eq!(mustang_warning, "WARNING: 2 aligned cols < 10\n");
+    set_log_file_name("");
+    assert_eq!(mustang_warning, "\nWARNING: 2 aligned cols < 10\n\n");
+    assert_eq!(
+        std::fs::read_to_string(&mustang_warning_log).unwrap(),
+        "\nWARNING: 2 aligned cols < 10\n"
+    );
     assert!(!mustang_out.exists());
+    std::fs::remove_file(&mustang_warning_log).unwrap();
     std::fs::remove_file(&mustang_in).unwrap();
 
     let (names, deltas) = parse_spatter_spec("gapopen,0.25/center,-1.5");
@@ -13168,7 +15573,8 @@ fn sweep_specs_and_gap_stripping_match_cpp_logic() {
         },
     );
     assert_eq!((q, tc), (0.5, 0.6));
-    assert!(log.starts_with("gapopen=      -8 center=     0.4"));
+    assert!(log.contains("  gapopen=      -8 center=     0.4"));
+    assert_ne!(log.find("gapopen="), Some(0));
     assert!(log.ends_with('\r'));
 
     let sweep_root =
@@ -13180,6 +15586,7 @@ fn sweep_specs_and_gap_stripping_match_cpp_logic() {
     std::fs::write(&sweep_names, b"case.fa\n").unwrap();
     std::fs::write(sweep_ref_dir.join("case.fa"), b">s1\nA-C\n>s2\nAG-\n").unwrap();
     let mut sweep_calls = Vec::new();
+    let mut saw_streamed_sweep_fev = false;
     let (sweep_s, sweep_bench, sweep_log, sweep_fev_text) = cmd_sweep(
         sweep_names.to_str().unwrap(),
         sweep_ref_dir.to_str().unwrap(),
@@ -13189,6 +15596,11 @@ fn sweep_specs_and_gap_stripping_match_cpp_logic() {
         None,
         Some(2),
         |ap, ref_name, input, ref_msa, q2| {
+            if sweep_calls.len() == 1 {
+                let partial_fev = std::fs::read_to_string(&sweep_fev).unwrap();
+                assert!(partial_fev.starts_with("1\tscore="));
+                saw_streamed_sweep_fev = true;
+            }
             sweep_calls.push((
                 ref_name.to_string(),
                 sequence_get_seq_as_string(&input.seqs[0]),
@@ -13212,6 +15624,7 @@ fn sweep_specs_and_gap_stripping_match_cpp_logic() {
     assert_eq!(sweep_calls[0].2, "A-C");
     assert!(!sweep_calls[0].3);
     assert_eq!(sweep_calls[0].6, 2);
+    assert!(saw_streamed_sweep_fev);
     assert!(sweep_log.contains("Top params:"));
     assert_eq!(std::fs::read_to_string(&sweep_fev).unwrap(), sweep_fev_text);
     std::fs::remove_dir_all(&sweep_root).unwrap();
@@ -13227,6 +15640,8 @@ fn sweep_specs_and_gap_stripping_match_cpp_logic() {
     std::fs::write(spatter_ref_dir.join("case.fa"), b">s1\nA-C\n>s2\nAG-\n").unwrap();
     reset_rand(1);
     let mut spatter_calls = 0;
+    let mut saw_streamed_spatter_output1 = false;
+    let mut saw_streamed_spatter_fev = false;
     let (spatter_s1, spatter_s2, _bench, _warmup_bench, spatter_log, output1_text, fev_text) =
         cmd_spatter(
             spatter_names.to_str().unwrap(),
@@ -13243,6 +15658,17 @@ fn sweep_specs_and_gap_stripping_match_cpp_logic() {
             1,
             0.5,
             |ap, _ref_name, _input, _ref_msa, _q2| {
+                assert!(get_quiet());
+                if spatter_calls == 1 {
+                    let partial_output1 = std::fs::read_to_string(&spatter_output1).unwrap();
+                    assert!(partial_output1.starts_with("1\tscore="));
+                    saw_streamed_spatter_output1 = true;
+                }
+                if spatter_calls > 5 && !saw_streamed_spatter_fev {
+                    let partial_fev = std::fs::read_to_string(&spatter_fev).unwrap();
+                    assert!(partial_fev.starts_with("1\tscore="));
+                    saw_streamed_spatter_fev = true;
+                }
                 spatter_calls += 1;
                 (
                     0.1 + f64::from(ap.center),
@@ -13253,8 +15679,12 @@ fn sweep_specs_and_gap_stripping_match_cpp_logic() {
     assert!(spatter_calls >= 5);
     assert_eq!(spatter_s1.param_names, vec!["gapopen", "center"]);
     assert_eq!(spatter_s2.param_names, vec!["gapopen", "center"]);
+    assert!(saw_streamed_spatter_output1);
+    assert!(saw_streamed_spatter_fev);
     assert!(spatter_log.contains("Warmup done"));
     assert!(spatter_log.contains("Top params:"));
+    assert!(spatter_log.contains("  gapopen="));
+    assert_ne!(spatter_log.find("gapopen="), Some(0));
     assert_eq!(
         std::fs::read_to_string(&spatter_output1).unwrap(),
         output1_text
@@ -13379,7 +15809,7 @@ fn balibase_fixture_commands_exercise_real_data_paths() {
         String::from_utf8_lossy(&qscoredir_cli.stdout),
         String::from_utf8_lossy(&qscoredir_cli.stderr)
     );
-    assert_eq!(String::from_utf8(qscoredir_cli.stdout).unwrap(), qscoredir);
+    assert_eq!(String::from_utf8(qscoredir_cli.stdout).unwrap(), "");
 
     let efa_root = std::env::temp_dir().join(format!(
         "muscle_rs_balibase_real_efa_{}",
@@ -13549,6 +15979,7 @@ fn balibase_fixture_commands_exercise_real_data_paths() {
     let squeezed = cmd_squeeze_inserts(
         "muscle/test_data/ref_alns/BB11001",
         squeeze_file.to_str().unwrap(),
+        None,
     );
     assert_eq!(squeezed.seqs.len(), 4);
     assert!(multi_sequence_get_col_count(&squeezed) <= multi_sequence_get_col_count(&efa.msas[0]));
@@ -13867,7 +16298,7 @@ fn high_risk_real_data_alignment_and_mega_paths() {
 
     let super7_mega_out = root.join("super7_mega.fa");
     reset_rand(1);
-    let (_s7m, _mega_guide_tree, super7_mega_log) = cmd_super7_mega(
+    let (_s7m, _mega_guide_tree, super7_mega_log) = super7_mega_command_body(
         "muscle/test_data/mega/BB11001.mega",
         super7_mega_out.to_str().unwrap(),
         Some(4),
@@ -13892,40 +16323,16 @@ fn high_risk_real_data_alignment_and_mega_paths() {
         .output()
         .unwrap();
     assert!(
-        super7_mega_cli.status.success(),
+        !super7_mega_cli.status.success(),
         "stdout={} stderr={}",
         String::from_utf8_lossy(&super7_mega_cli.stdout),
         String::from_utf8_lossy(&super7_mega_cli.stderr)
     );
-    assert_eq!(
-        String::from_utf8(super7_mega_cli.stdout).unwrap(),
-        "Done.\n"
-    );
-    let super7_mega_cli_msa =
-        msa_from_fasta_file_l95(root.join("super7_mega_cli.fa").to_str().unwrap());
-    assert_eq!(super7_mega_cli_msa.seqs.len(), super7_mega_msa.seqs.len());
-    assert!(multi_sequence_get_col_count(&super7_mega_cli_msa) > 0);
-    // The label order of `super7_mega` depends on global label state that
-    // bleeds between tests; here we only require the same *set* of labels
-    // and that each label's ungapped sequence is identical across the two
-    // invocations.
-    let mut cli_by_label: std::collections::BTreeMap<String, String> =
-        std::collections::BTreeMap::new();
-    for seq in &super7_mega_cli_msa.seqs {
-        cli_by_label.insert(
-            seq.label.clone(),
-            sequence_get_seq_as_string(seq).replace('-', ""),
-        );
-    }
-    let mut direct_by_label: std::collections::BTreeMap<String, String> =
-        std::collections::BTreeMap::new();
-    for seq in &super7_mega_msa.seqs {
-        direct_by_label.insert(
-            seq.label.clone(),
-            sequence_get_seq_as_string(seq).replace('-', ""),
-        );
-    }
-    assert_eq!(cli_by_label, direct_by_label);
+    assert!(super7_mega_cli.stdout.is_empty());
+    let super7_mega_cli_stderr = String::from_utf8_lossy(&super7_mega_cli.stderr);
+    assert!(super7_mega_cli_stderr.contains("---Fatal error---"));
+    assert!(super7_mega_cli_stderr.contains("_mega"));
+    assert!(!root.join("super7_mega_cli.fa").exists());
 
     let source_mega = std::fs::read_to_string("muscle/test_data/mega/BB11001.mega").unwrap();
     let two_chain_mega = root.join("BB11001.first_two.mega");
@@ -14365,6 +16772,41 @@ fn blosum_and_mega_from_msa_aa_only_match_cpp_logic() {
         ),
         "{print_probe_text:?}"
     );
+    let m3_params_log_file = std::env::temp_dir().join(format!(
+        "muscle_rs_m3_params_log_{}.txt",
+        std::process::id()
+    ));
+    set_log_file_name(m3_params_log_file.to_str().unwrap());
+    let mut logged_ap = M3AlnParams {
+        min_std_rand: 1,
+        ..M3AlnParams::default()
+    };
+    let logged_blosum = m3_aln_params_set_blosum_with_log(
+        &mut logged_ap,
+        62,
+        0,
+        f32::MAX,
+        f32::MAX,
+        0,
+        0.0,
+        0.0,
+        0.0,
+        true,
+    )
+    .unwrap();
+    let mut logged_mx_ap = M3AlnParams {
+        min_std_rand: 1,
+        ..M3AlnParams::default()
+    };
+    let logged_update =
+        m3_aln_params_update_mx_with_log(&mut logged_mx_ap, &subst, -6.0, 0.8, true).unwrap();
+    set_log_file_name("");
+    assert!(logged_blosum.contains("m_GapOpen=-6 m_Center=0.8"));
+    assert!(logged_update.contains("m_GapOpen=-6 m_Center=0.8"));
+    let m3_params_log_text = std::fs::read_to_string(&m3_params_log_file).unwrap();
+    assert!(m3_params_log_text.starts_with(&logged_blosum));
+    assert!(m3_params_log_text.ends_with(&logged_update));
+    std::fs::remove_file(&m3_params_log_file).unwrap();
 
     let mut mx = [[0.0f32; 20]; 20];
     mx[0][0] = 1.0;
@@ -14496,6 +16938,11 @@ fn blosum_and_mega_from_msa_aa_only_match_cpp_logic() {
     let mut refined = MultiSequence::default();
     reset_rand(1);
     let mut nw_calls = 0;
+    let refine_log_file = std::env::temp_dir().join(format!(
+        "muscle_rs_m3_refine_log_{}.txt",
+        std::process::id()
+    ));
+    set_log_file_name(refine_log_file.to_str().unwrap());
     let refine_log = m3_refine(
         &refine_msa,
         &ap,
@@ -14506,47 +16953,54 @@ fn blosum_and_mega_from_msa_aa_only_match_cpp_logic() {
             format!("{}x{}", p1.pps.len(), p2.pps.len())
         },
     );
+    set_log_file_name("");
     assert_eq!(nw_calls, 96);
     assert!(refined.seqs.is_empty());
     assert_eq!(refine_log.matches("Path01=").count(), 32);
     assert!(refine_log.contains("\nPath01=2x2\nPath02=2x2\nPath12=2x2\n"));
+    assert_eq!(
+        std::fs::read_to_string(&refine_log_file).unwrap(),
+        refine_log
+    );
+    std::fs::remove_file(&refine_log_file).unwrap();
 
     let m3refine_in =
         std::env::temp_dir().join(format!("muscle_rs_cmd_m3refine_{}.fa", std::process::id()));
     std::fs::write(&m3refine_in, b">r0\nAC\n>r1\nAD\n>r2\nAE\n").unwrap();
-    let (cmd_msa, cmd_labels, cmd_weights, cmd_tree, cmd_ap, cmd_refined, cmd_log) = cmd_m3refine(
-        m3refine_in.to_str().unwrap(),
-        |u, tree| {
-            assert_eq!(
-                u.labels,
-                vec!["r0".to_string(), "r1".to_string(), "r2".to_string()]
-            );
-            tree_create(
-                tree,
-                3,
-                1,
-                &[0, 3],
-                &[1, 2],
-                &[0.2, 0.3],
-                &[0.2, 0.3],
-                &[0, 1, 2],
-                &["r0".to_string(), "r1".to_string(), "r2".to_string()],
-            );
-        },
-        |ap| {
-            ap.ready = true;
-            ap.gap_open = -6.0;
-            ap.center = 0.8;
-            ap.subst_mx_letter = subst;
-        },
-        |msa, ap, weights, refined_msa| {
-            assert_eq!(msa.seqs.len(), 3);
-            assert!(ap.ready);
-            assert!((weights.iter().sum::<f32>() - 1.0).abs() < 1e-6);
-            multi_sequence_copy(refined_msa, msa);
-            "cmd-m3refine\n".to_string()
-        },
-    );
+    let (cmd_msa, cmd_labels, cmd_weights, cmd_tree, cmd_ap, cmd_refined, cmd_log) =
+        cmd_m3refine_with_hooks(
+            m3refine_in.to_str().unwrap(),
+            |u, tree| {
+                assert_eq!(
+                    u.labels,
+                    vec!["r0".to_string(), "r1".to_string(), "r2".to_string()]
+                );
+                tree_create(
+                    tree,
+                    3,
+                    1,
+                    &[0, 3],
+                    &[1, 2],
+                    &[0.2, 0.3],
+                    &[0.2, 0.3],
+                    &[0, 1, 2],
+                    &["r0".to_string(), "r1".to_string(), "r2".to_string()],
+                );
+            },
+            |ap| {
+                ap.ready = true;
+                ap.gap_open = -6.0;
+                ap.center = 0.8;
+                ap.subst_mx_letter = subst;
+            },
+            |msa, ap, weights, refined_msa| {
+                assert_eq!(msa.seqs.len(), 3);
+                assert!(ap.ready);
+                assert!((weights.iter().sum::<f32>() - 1.0).abs() < 1e-6);
+                multi_sequence_copy(refined_msa, msa);
+                "cmd-m3refine\n".to_string()
+            },
+        );
     assert_eq!(cmd_labels, vec!["r0", "r1", "r2"]);
     assert_eq!(cmd_msa.seqs.len(), 3);
     assert_eq!(cmd_tree.node_count, 5);
@@ -14554,6 +17008,34 @@ fn blosum_and_mega_from_msa_aa_only_match_cpp_logic() {
     assert_eq!(cmd_refined.seqs.len(), 3);
     assert_eq!(cmd_log, "cmd-m3refine\n");
     assert!((cmd_weights.iter().sum::<f32>() - 1.0).abs() < 1e-6);
+
+    let (_msa, _labels, _weights, biased_tree, ap_from_cmd, _refined, cmd_default_log) =
+        cmd_m3refine(
+            m3refine_in.to_str().unwrap(),
+            None,
+            Some(-5.5),
+            Some(0.75),
+            None,
+            None,
+            None,
+            Some("max"),
+            None,
+            Some(3),
+            |msa, ap, weights, refined_msa| {
+                assert_eq!(msa.seqs.len(), 3);
+                assert!(ap.ready);
+                assert!((weights.iter().sum::<f32>() - 1.0).abs() < 1e-6);
+                multi_sequence_copy(refined_msa, msa);
+                "cmd-m3refine-defaults\n".to_string()
+            },
+        );
+    assert_eq!(biased_tree.node_count, 5);
+    assert!(ap_from_cmd.ready);
+    assert_eq!(ap_from_cmd.linkage, "max");
+    assert_eq!(ap_from_cmd.tree_iters, 3);
+    assert_eq!(ap_from_cmd.gap_open, -5.5);
+    assert_eq!(ap_from_cmd.center, 0.75);
+    assert_eq!(cmd_default_log, "cmd-m3refine-defaults\n");
     std::fs::remove_file(&m3refine_in).unwrap();
 
     let mut muscle3_input = MultiSequence::default();
@@ -14607,6 +17089,15 @@ fn blosum_and_mega_from_msa_aa_only_match_cpp_logic() {
     );
     assert_eq!(m3_upgma_calls.len(), 2);
     assert_eq!(m3_pp_calls.len(), 2);
+    assert_eq!(m3.ap_addr, Some(&muscle3_ap as *const M3AlnParams as usize));
+    assert_eq!(
+        m3.input_seqs_addr,
+        Some(&muscle3_input as *const MultiSequence as usize)
+    );
+    assert_eq!(
+        m3.final_msa_addr,
+        Some(&m3.pp3.msa as *const MultiSequence as usize)
+    );
     assert_eq!(m3.labels, vec!["m0", "m1", "m2"]);
     assert_eq!(m3.final_msa.as_ref().unwrap(), &final_msa);
     assert_eq!(
@@ -14672,6 +17163,14 @@ fn blosum_and_mega_from_msa_aa_only_match_cpp_logic() {
         },
     );
     assert_eq!(run_ro_paths, vec!["M".to_string(), "M".to_string()]);
+    assert_eq!(
+        run_ro_m3.input_seqs_addr,
+        Some(&run_ro_input as *const MultiSequence as usize)
+    );
+    assert_eq!(
+        run_ro_m3.final_msa_addr,
+        Some(run_ro_m3.final_msa.as_ref().unwrap() as *const MultiSequence as usize)
+    );
     assert!((run_ro_weights[0].0 - 0.5).abs() < 1e-6);
     assert!((run_ro_weights[0].1 - 0.5).abs() < 1e-6);
     assert!((run_ro_weights[1].0 - 0.2).abs() < 1e-6);
@@ -14714,14 +17213,26 @@ fn blosum_and_mega_from_msa_aa_only_match_cpp_logic() {
         b">a\nACDEFGHIKLMNPQRSTVWY\n>b\nACDEFGHIKLMNPQRSAVWY\n>c\nGGGGGGGGGGGGGGGGGGGG\n",
     )
     .unwrap();
-    let selected = cmd_m3select(
+    let strict_m3select = std::panic::catch_unwind(|| {
+        cmd_m3select(m3select_in.to_str().unwrap(), "", Some(1), Some(1))
+    });
+    assert!(strict_m3select.is_err());
+    assert!(!get_quiet());
+
+    let selected = cmd_m3select_reusable(
         m3select_in.to_str().unwrap(),
         m3select_out.to_str().unwrap(),
         Some(1),
+        Some(2),
     );
+    assert!(!get_quiet());
     assert_eq!(selected.matches('>').count(), 3);
     assert!(selected.contains(">a\n"));
     assert_eq!(std::fs::read_to_string(&m3select_out).unwrap(), selected);
+    let selected_parallel =
+        cmd_m3select_reusable(m3select_in.to_str().unwrap(), "", Some(2), Some(2));
+    assert_eq!(selected_parallel.matches('>').count(), 3);
+    assert!(selected_parallel.contains(">a\n"));
     std::fs::remove_file(&m3select_in).unwrap();
     std::fs::remove_file(&m3select_out).unwrap();
 
@@ -14793,8 +17304,13 @@ fn blosum_and_mega_from_msa_aa_only_match_cpp_logic() {
 
     {
         *MEGA_STATE.lock().unwrap() = MegaState::default();
+        mega_reset_duplicate_sequence_warning_for_tests();
         let mega_file = std::env::temp_dir().join(format!(
             "muscle_rs_mega_from_file_{}.mega",
+            std::process::id()
+        ));
+        let mega_warning_log = std::env::temp_dir().join(format!(
+            "muscle_rs_mega_from_file_warning_{}.log",
             std::process::id()
         ));
         std::fs::write(
@@ -14819,7 +17335,9 @@ fn blosum_and_mega_from_msa_aa_only_match_cpp_logic() {
             ),
         )
         .unwrap();
+        set_log_file_name(mega_warning_log.to_str().unwrap());
         mega_from_file(mega_file.to_str().unwrap());
+        set_log_file_name("");
         let mega = MEGA_STATE.lock().unwrap();
         assert!(mega.loaded);
         assert!(mega.lines.is_empty());
@@ -14838,7 +17356,22 @@ fn blosum_and_mega_from_msa_aa_only_match_cpp_logic() {
         assert!((mega.log_prob_mx_vec[0][2][0] - 1e-6_f32.ln()).abs() < 1e-6);
         assert_eq!(mega.log_odds_mx_vec[0][2][1], 5.0);
         drop(mega);
+        let warning_log = std::fs::read_to_string(&mega_warning_log).unwrap();
+        assert_eq!(
+            warning_log
+                .matches("WARNING: Duplicate sequences found")
+                .count(),
+            1
+        );
+        let reload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            mega_from_file(mega_file.to_str().unwrap());
+        }));
+        assert!(reload.is_err());
+        MEGA_STATE.clear_poison();
+        *MEGA_STATE.lock().unwrap() = MegaState::default();
+        MEGA_LOADED.store(false, std::sync::atomic::Ordering::Relaxed);
         std::fs::remove_file(&mega_file).unwrap();
+        std::fs::remove_file(&mega_warning_log).unwrap();
     }
 
     mega_from_msa_aa_only(&aln, -4.5, -0.6);
@@ -15003,6 +17536,219 @@ fn blosum_and_mega_from_msa_aa_only_match_cpp_logic() {
 }
 
 #[test]
+fn muscle3_command_and_run_lifecycle_match_cpp() {
+    let _global_guard = GLOBAL_STATE_TEST_LOCK.lock().unwrap();
+    set_alpha_l209(ALPHA::ALPHA_Amino);
+
+    let dir = std::env::temp_dir().join(format!(
+        "muscle_rs_muscle3_lifecycle_{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let input_file = dir.join("input.fa");
+    let output_file = dir.join("out.fa");
+    std::fs::write(&input_file, b">a\nACDEFGH\n>b\nACDEFIH\n").unwrap();
+
+    let mut cmd_seen = Vec::new();
+    let (cmd_msa, cmd_tree) = cmd_muscle3(
+        input_file.to_str().unwrap(),
+        output_file.to_str().unwrap(),
+        None,
+        false,
+        |ap, is_nucleo| {
+            assert!(!is_nucleo);
+            ap.ready = true;
+            ap.kmer_dist = "33".to_string();
+            ap.linkage = "min".to_string();
+        },
+        |m3, ap, input| {
+            assert_eq!(m3.ap_addr, Some(ap as *const M3AlnParams as usize));
+            assert_eq!(get_gsi_by_label("b"), 1);
+            cmd_seen.push(sequence_get_seq_as_string(&get_global_input_seq_by_label(
+                "a",
+            )));
+            tree_create(
+                &mut m3.guide_tree,
+                2,
+                0,
+                &[0],
+                &[1],
+                &[0.1],
+                &[0.1],
+                &[0, 1],
+                &["a".to_string(), "b".to_string()],
+            );
+            m3.final_msa = Some(input.clone());
+            m3.final_msa_addr =
+                Some(m3.final_msa.as_ref().unwrap() as *const MultiSequence as usize);
+            input.clone()
+        },
+        |_m3, _ap, _input| panic!("RunRO should not be called"),
+    );
+    assert_eq!(cmd_seen, vec!["ACDEFGH".to_string()]);
+    assert!(cmd_tree.is_some());
+    assert_eq!(multi_sequence_get_col_count(&cmd_msa), 7);
+    assert_eq!(
+        std::fs::read_to_string(&output_file).unwrap(),
+        ">a\nACDEFGH\n>b\nACDEFIH\n"
+    );
+
+    let mut run_input = MultiSequence::default();
+    multi_sequence_from_strings(
+        &mut run_input,
+        &["r0".to_string(), "r1".to_string()],
+        &["ACDEFGH".to_string(), "ACDEFIH".to_string()],
+    );
+    set_global_input_ms(&run_input);
+    let ap = M3AlnParams {
+        ready: true,
+        kmer_dist: "33".to_string(),
+        linkage: "min".to_string(),
+        ..M3AlnParams::default()
+    };
+    let mut m3 = Muscle3::default();
+    let final_msa = muscle3_run(
+        &mut m3,
+        &ap,
+        &run_input,
+        |_u, _linkage, tree| {
+            tree_create(
+                tree,
+                2,
+                0,
+                &[0],
+                &[1],
+                &[0.1],
+                &[0.1],
+                &[0, 1],
+                &["r0".to_string(), "r1".to_string()],
+            );
+        },
+        |_pp3, input, _weights, _tree| input.clone(),
+    );
+    assert_eq!(m3.ap_addr, Some(&ap as *const M3AlnParams as usize));
+    assert_eq!(
+        m3.input_seqs_addr,
+        Some(&run_input as *const MultiSequence as usize)
+    );
+    assert_eq!(
+        m3.final_msa_addr,
+        Some(&m3.pp3.msa as *const MultiSequence as usize)
+    );
+    assert_eq!(m3.final_msa.as_ref().unwrap(), &final_msa);
+
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn swmasm_command_helpers_write_global_log_like_cpp() {
+    let _guard = GLOBAL_STATE_TEST_LOCK.lock().unwrap();
+
+    let swmasm_masm = std::env::temp_dir().join(format!(
+        "muscle_rs_cmd_swmasm_focused_{}.masm",
+        std::process::id()
+    ));
+    let swmasm_out = std::env::temp_dir().join(format!(
+        "muscle_rs_cmd_swmasm_focused_{}.tsv",
+        std::process::id()
+    ));
+    let swmasm_log_file = std::env::temp_dir().join(format!(
+        "muscle_rs_cmd_swmasm_focused_{}.log",
+        std::process::id()
+    ));
+
+    let mut sw_cmd_ma = make_masm_aa("CAC");
+    for col in &mut sw_cmd_ma.cols {
+        for scores in &mut col.scores_vec {
+            scores.fill(-10.0);
+        }
+    }
+    sw_cmd_ma.cols[1].scores_vec[0][0] = 1.25;
+    masm_to_file_l150(&sw_cmd_ma, swmasm_masm.to_str().unwrap());
+
+    set_log_file_name(swmasm_log_file.to_str().unwrap());
+    let cmd_swmasm_log = cmd_swmasm(
+        swmasm_masm.to_str().unwrap(),
+        "query.mega",
+        swmasm_out.to_str().unwrap(),
+        |mega_file_name| {
+            assert_eq!(mega_file_name, "query.mega");
+            let mut query_msa = MultiSequence::default();
+            multi_sequence_from_strings(&mut query_msa, &["q1".to_string()], &["DAD".to_string()]);
+            mega_from_msa_aa_only(&query_msa, -3.0, -1.0);
+        },
+    );
+    set_log_file_name("");
+
+    assert!(cmd_swmasm_log.contains("Score = 1.25"));
+    assert!(cmd_swmasm_log.contains("q1"));
+    let cmd_swmasm_global_log = std::fs::read_to_string(&swmasm_log_file).unwrap();
+    assert!(cmd_swmasm_global_log.contains("100.0% Aligning\n"));
+    assert!(cmd_swmasm_global_log.ends_with(&cmd_swmasm_log));
+    assert_eq!(
+        std::fs::read_to_string(&swmasm_out).unwrap(),
+        "MSA\tq1\t1.25\n"
+    );
+
+    std::fs::remove_file(&swmasm_masm).unwrap();
+    std::fs::remove_file(&swmasm_out).unwrap();
+    std::fs::remove_file(&swmasm_log_file).unwrap();
+
+    let swmasm_seq_aln = std::env::temp_dir().join(format!(
+        "muscle_rs_cmd_swmasm_seq_focused_aln_{}.fa",
+        std::process::id()
+    ));
+    let swmasm_seq_query = std::env::temp_dir().join(format!(
+        "muscle_rs_cmd_swmasm_seq_focused_query_{}.fa",
+        std::process::id()
+    ));
+    let swmasm_seq_out = std::env::temp_dir().join(format!(
+        "muscle_rs_cmd_swmasm_seq_focused_{}.masm",
+        std::process::id()
+    ));
+    let swmasm_seq_log_file = std::env::temp_dir().join(format!(
+        "muscle_rs_cmd_swmasm_seq_focused_{}.log",
+        std::process::id()
+    ));
+    std::fs::write(&swmasm_seq_aln, b">a\nCAC\n").unwrap();
+    std::fs::write(&swmasm_seq_query, b">query_label\nDAD\n").unwrap();
+
+    set_log_file_name(swmasm_seq_log_file.to_str().unwrap());
+    let cmd_swmasm_seq_log = cmd_swmasm_seq(
+        swmasm_seq_aln.to_str().unwrap(),
+        "seqmodel.mega",
+        swmasm_seq_query.to_str().unwrap(),
+        swmasm_seq_out.to_str().unwrap(),
+        |mega_file_name| {
+            assert_eq!(mega_file_name, "seqmodel.mega");
+            let mut train_msa = MultiSequence::default();
+            multi_sequence_load_mfa_l8(&mut train_msa, swmasm_seq_aln.to_str().unwrap(), false);
+            mega_from_msa_aa_only(&train_msa, -4.0, -0.5);
+        },
+    );
+    set_log_file_name("");
+
+    assert_eq!(
+        cmd_swmasm_seq_log,
+        "      1.96       query_label        1        1  M\n\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&swmasm_seq_log_file).unwrap(),
+        cmd_swmasm_seq_log
+    );
+    assert!(
+        std::fs::read_to_string(&swmasm_seq_out)
+            .unwrap()
+            .starts_with("MASM\t1\t3\t1\t4\t0.5\tFomMSA\n")
+    );
+
+    std::fs::remove_file(&swmasm_seq_aln).unwrap();
+    std::fs::remove_file(&swmasm_seq_query).unwrap();
+    std::fs::remove_file(&swmasm_seq_out).unwrap();
+    std::fs::remove_file(&swmasm_seq_log_file).unwrap();
+}
+
+#[test]
 fn mega_accessors_and_masm_profile_calculations_match_cpp_logic() {
     let _guard = GLOBAL_STATE_TEST_LOCK.lock().unwrap();
     set_alpha_l209(ALPHA::ALPHA_Amino);
@@ -15069,18 +17815,28 @@ fn mega_accessors_and_masm_profile_calculations_match_cpp_logic() {
     let marginals = mega_calc_marginal_freqs(&[vec![0.1, 0.2], vec![0.2, 0.5]]);
     assert!((marginals[0] - 0.3).abs() < 1e-6);
     assert!((marginals[1] - 0.7).abs() < 1e-6);
+    let mega_sink_log_file = std::env::temp_dir().join(format!(
+        "muscle_rs_mega_sink_log_{}.txt",
+        std::process::id()
+    ));
+    set_log_file_name(mega_sink_log_file.to_str().unwrap());
+    let mx_log = mega_log_mx("Mx", &[vec![1.25, -2.0], vec![3.5, 4.0]]);
+    let vec_log = mega_log_vec("V", &[1.25, -2.0, 3.5]);
+    let feature_log = mega_log_feature_params(0);
+    set_log_file_name("");
     assert_eq!(
-        mega_log_mx("Mx", &[vec![1.25, -2.0], vec![3.5, 4.0]]),
+        mx_log,
         "\nMx/2\n            0       1\n[ 0]     1.25   -2.00\n[ 1]     3.50    4.00\n"
     );
-    assert_eq!(
-        mega_log_vec("V", &[1.25, -2.0, 3.5]),
-        "\nV/3\n  [ 0]=1.25 [ 1]=-2.00 [ 2]=3.50\n"
-    );
-    let feature_log = mega_log_feature_params(0);
+    assert_eq!(vec_log, "\nV/3\n  [ 0]=1.25 [ 1]=-2.00 [ 2]=3.50\n");
     assert!(feature_log.starts_with("\nFeature AA, weight 0.7\n\nAA/4\n"));
     assert!(feature_log.contains("[ 3]=1.00"));
     assert!(feature_log.contains("\nAA/4\n"));
+    assert_eq!(
+        std::fs::read_to_string(&mega_sink_log_file).unwrap(),
+        format!("{mx_log}{vec_log}{feature_log}")
+    );
+    std::fs::remove_file(&mega_sink_log_file).unwrap();
     assert!((mega_get_ins_score(&[vec![3, 1]], 0) - 0.88).abs() < 1e-6);
     assert!((mega_get_match_score_log_odds(&[vec![0, 1]], 0, &[vec![2, 0]], 0) - 0.9).abs() < 1e-6);
     assert!((mega_get_match_score(&[vec![3, 2]], 0, &[vec![1, 0]], 0) - 3.38).abs() < 1e-6);
@@ -15199,10 +17955,19 @@ fn mega_accessors_and_masm_profile_calculations_match_cpp_logic() {
     masm_to_file_l150(&from_msa, tmp.to_str().unwrap());
     let mut parsed_masm = MASM::default();
     masm_from_file(&mut parsed_masm, tmp.to_str().unwrap());
+    let masm_stats_log =
+        std::env::temp_dir().join(format!("muscle_rs_masm_stats_{}.log", std::process::id()));
+    set_log_file_name(masm_stats_log.to_str().unwrap());
     assert_eq!(
         cmd_masm_stats(tmp.to_str().unwrap()),
         "         3  Sequences\n         4  Columns\n         2  Features  AA/4 SS/3\n"
     );
+    set_log_file_name("");
+    assert_eq!(
+        std::fs::read_to_string(&masm_stats_log).unwrap(),
+        "         3  Sequences\n         4  Columns\n         2  Features  AA/4 SS/3\n"
+    );
+    std::fs::remove_file(&masm_stats_log).unwrap();
     std::fs::remove_file(&tmp).unwrap();
     let train_aln = std::env::temp_dir().join(format!(
         "muscle_rs_masm_train_aln_{}.fa",
@@ -15355,8 +18120,14 @@ fn mega_accessors_and_masm_profile_calculations_match_cpp_logic() {
     assert_eq!(seq_smx.data[0], vec![1.0, 2.0, 0.0]);
     assert_eq!(seq_smx.data[1], vec![-1.0, -2.0, 0.0]);
     assert_eq!(masm_get_consensus_seq(&score_masm), "Ad");
-    let aa_profile = vec![vec![0, 1], vec![2, 2], vec![3, 0]];
+    let mut aa_profile = vec![vec![0, 1], vec![2, 2], vec![3, 0]];
     assert_eq!(get_mega_profile_aa_seq(&aa_profile), "ADE");
+    set_alpha_l209(ALPHA::ALPHA_Nucleo);
+    assert_eq!(
+        get_mega_profile_aa_seq(&[vec![0, 1], vec![20, 2], vec![21, 0]]),
+        "A*?"
+    );
+    set_alpha_l209(ALPHA::ALPHA_Amino);
     assert_eq!(
         write_local_aln_masm("masm", &score_masm, "prof", &aa_profile, 0, 0, "MDII"),
         "\n    1 Ad-- 2  masm\n      |   \n    1 A-DE 3  prof\n"
@@ -15380,6 +18151,10 @@ fn mega_accessors_and_masm_profile_calculations_match_cpp_logic() {
     assert_eq!(path_scorer_masm_mega_get_score_dd(&ps_mm, 0, 0), -3.0);
     assert_eq!(path_scorer_masm_mega_get_score_im(&ps_mm, 0, 0), -5.0);
     assert_eq!(path_scorer_masm_mega_get_score_ii(&ps_mm, 0, 0), -2.0);
+    scorer_masm.cols[0].gap_open = 8.0;
+    aa_profile[1] = vec![0, 2];
+    assert_eq!(path_scorer_masm_mega_get_score_md(&ps_mm, 0, 0), -8.0);
+    assert_eq!(path_scorer_masm_mega_get_match_score(&ps_mm, 0, 1), 3.5);
 
     let ps_aa = PathScorerAABLOSUM62 {
         gap_open: -6.0,
@@ -15459,6 +18234,8 @@ fn mega_accessors_and_masm_profile_calculations_match_cpp_logic() {
         std::env::temp_dir().join(format!("muscle_rs_cmd_swmasm_{}.masm", std::process::id()));
     let swmasm_out =
         std::env::temp_dir().join(format!("muscle_rs_cmd_swmasm_{}.tsv", std::process::id()));
+    let swmasm_log_file =
+        std::env::temp_dir().join(format!("muscle_rs_cmd_swmasm_{}.log", std::process::id()));
     let mut sw_cmd_ma = sw_ma.clone();
     for col in &mut sw_cmd_ma.cols {
         for scores in &mut col.scores_vec {
@@ -15467,6 +18244,7 @@ fn mega_accessors_and_masm_profile_calculations_match_cpp_logic() {
     }
     sw_cmd_ma.cols[1].scores_vec[0][0] = 1.25;
     masm_to_file_l150(&sw_cmd_ma, swmasm_masm.to_str().unwrap());
+    set_log_file_name(swmasm_log_file.to_str().unwrap());
     let cmd_swmasm_log = cmd_swmasm(
         swmasm_masm.to_str().unwrap(),
         "query.mega",
@@ -15478,14 +18256,19 @@ fn mega_accessors_and_masm_profile_calculations_match_cpp_logic() {
             mega_from_msa_aa_only(&query_msa, -3.0, -1.0);
         },
     );
+    set_log_file_name("");
     assert!(cmd_swmasm_log.contains("Score = 1.25"));
     assert!(cmd_swmasm_log.contains("q1"));
+    let cmd_swmasm_global_log = std::fs::read_to_string(&swmasm_log_file).unwrap();
+    assert!(cmd_swmasm_global_log.contains("100.0% Aligning\n"));
+    assert!(cmd_swmasm_global_log.ends_with(&cmd_swmasm_log));
     assert_eq!(
         std::fs::read_to_string(&swmasm_out).unwrap(),
         "MSA\tq1\t1.25\n"
     );
     std::fs::remove_file(&swmasm_masm).unwrap();
     std::fs::remove_file(&swmasm_out).unwrap();
+    std::fs::remove_file(&swmasm_log_file).unwrap();
 
     let swmasm_seq_aln = std::env::temp_dir().join(format!(
         "muscle_rs_cmd_swmasm_seq_aln_{}.fa",
@@ -15499,8 +18282,13 @@ fn mega_accessors_and_masm_profile_calculations_match_cpp_logic() {
         "muscle_rs_cmd_swmasm_seq_{}.masm",
         std::process::id()
     ));
+    let swmasm_seq_log_file = std::env::temp_dir().join(format!(
+        "muscle_rs_cmd_swmasm_seq_{}.log",
+        std::process::id()
+    ));
     std::fs::write(&swmasm_seq_aln, b">a\nCAC\n").unwrap();
     std::fs::write(&swmasm_seq_query, b">query_label\nDAD\n").unwrap();
+    set_log_file_name(swmasm_seq_log_file.to_str().unwrap());
     let cmd_swmasm_seq_log = cmd_swmasm_seq(
         swmasm_seq_aln.to_str().unwrap(),
         "seqmodel.mega",
@@ -15513,10 +18301,15 @@ fn mega_accessors_and_masm_profile_calculations_match_cpp_logic() {
             mega_from_msa_aa_only(&train_msa, -4.0, -0.5);
         },
     );
+    set_log_file_name("");
     assert!(cmd_swmasm_seq_log.contains("query_label"));
     assert_eq!(
         cmd_swmasm_seq_log,
         "      1.96       query_label        1        1  M\n\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&swmasm_seq_log_file).unwrap(),
+        cmd_swmasm_seq_log
     );
     assert!(cmd_swmasm_seq_log.contains("M"));
     assert!(
@@ -15530,6 +18323,7 @@ fn mega_accessors_and_masm_profile_calculations_match_cpp_logic() {
     std::fs::remove_file(&swmasm_seq_aln).unwrap();
     std::fs::remove_file(&swmasm_seq_query).unwrap();
     std::fs::remove_file(&swmasm_seq_out).unwrap();
+    std::fs::remove_file(&swmasm_seq_log_file).unwrap();
     let mut swer = SWer::default();
     let mut swer_lo_a = uint::MAX;
     let mut swer_lo_b = uint::MAX;
@@ -15805,6 +18599,17 @@ fn mega_accessors_and_masm_profile_calculations_match_cpp_logic() {
         local,
         get_blosum_score_chars(b'A', b'A') - 6.0 + get_blosum_score_chars(b'G', b'D')
     );
+    let unset_dims = std::panic::catch_unwind(|| {
+        path_scorer_get_local_score(
+            uint::MAX,
+            2,
+            0,
+            0,
+            "M",
+            |_from_state, _to_state, _pa, _pb| 0.0,
+        )
+    });
+    assert!(unset_dims.is_err());
 
     let mut aa_brute = TestSwMmBruteState {
         log_all_paths: true,
@@ -16024,6 +18829,28 @@ fn mega_accessors_and_masm_profile_calculations_match_cpp_logic() {
         (swps_lo_a, swps_lo_b, swps_path.as_str()),
         (simple2_lo_a, simple2_lo_b, simple2_path.as_str())
     );
+    let mut swps_bug_mem = XDPMem::default();
+    let mut swps_bug_lo_a = uint::MAX;
+    let mut swps_bug_lo_b = uint::MAX;
+    let mut swps_bug_path = String::new();
+    let _ = swps(
+        &mut swps_bug_mem,
+        2,
+        1,
+        &mut swps_bug_lo_a,
+        &mut swps_bug_lo_b,
+        &mut swps_bug_path,
+        |_pa, _pb| 0.0,
+        |_pa, _pb| -1.0,
+        |_pa, _pb| 2.0,
+        |_pa, _pb| -1.0,
+        |_pa, _pb| -1.0,
+        |_pa, _pb| 1.0e10,
+        |_pa, _pb| -1.0,
+        |_pa, _pb| -1.0,
+    );
+    assert_eq!(swps_bug_mem.buffer2[0], MINUS_INFINITY);
+    assert_eq!(swps_bug_mem.tb_bit[1][0] & 0x04, 0x04);
     let mut swer_ps_state = SWer::default();
     let mut swer_ps = PathScorerAABLOSUM62 {
         gap_open: -3.0,
@@ -16108,8 +18935,19 @@ fn mega_accessors_and_masm_profile_calculations_match_cpp_logic() {
         (aa_enum_lo_a, aa_enum_lo_b, aa_enum_path.as_str()),
         (aa_fast_lo_a, aa_fast_lo_b, aa_fast_path.as_str())
     );
+    let swsimple2_log_file = std::env::temp_dir().join(format!(
+        "muscle_rs_cmd_swsimple2_{}.log",
+        std::process::id()
+    ));
+    set_log_file_name(swsimple2_log_file.to_str().unwrap());
     let cmd_swsimple2_log = cmd_swsimple2();
+    set_log_file_name("");
     assert_eq!(cmd_swsimple2_log, "Score 9.81 path=MMMM\n");
+    let swsimple2_global_log = std::fs::read_to_string(&swsimple2_log_file).unwrap();
+    assert!(swsimple2_global_log.contains("LogMx(Simple_M)"));
+    assert!(swsimple2_global_log.contains("LogMx(Simple_TBM)"));
+    assert!(swsimple2_global_log.contains("TBM Simple2"));
+    std::fs::remove_file(&swsimple2_log_file).unwrap();
     let cmp_mx_panic = std::panic::catch_unwind(|| {
         cmp_mx(
             'M',
@@ -16192,6 +19030,66 @@ fn run_cpp_cli(cpp_bin: &str, args: &[&str]) -> std::process::Output {
         String::from_utf8_lossy(&output.stderr)
     );
     output
+}
+
+#[test]
+fn original_cpp_searchpd_threads1_matches_rust_on_small_fixture() {
+    let _global_guard = GLOBAL_STATE_TEST_LOCK.lock().unwrap();
+    let Some(cpp_bin) = original_muscle_bin() else {
+        eprintln!("skipping searchpd CLI parity test: C++ binary unavailable");
+        return;
+    };
+
+    let root = std::env::temp_dir().join(format!(
+        "muscle_rs_searchpd_threads1_cli_{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+
+    let query = root.join("query.fa");
+    let db = root.join("db.fa");
+    let cpp_out = root.join("cpp.tsv");
+    let rust_out = root.join("rust.tsv");
+    std::fs::write(&query, b">q1\nEFIL\n>q2\nPQRS\n").unwrap();
+    std::fs::write(&db, b">d1\nEFKL\n>d2\nWYVV\n").unwrap();
+
+    run_cpp_cli(
+        &cpp_bin,
+        &[
+            "-searchpd",
+            query.to_str().unwrap(),
+            "-db",
+            db.to_str().unwrap(),
+            "-maxpd",
+            "10",
+            "-tsvout",
+            cpp_out.to_str().unwrap(),
+            "-threads",
+            "1",
+            "-quiet",
+        ],
+    );
+    run_rust_cli(&[
+        "-searchpd",
+        query.to_str().unwrap(),
+        "-db",
+        db.to_str().unwrap(),
+        "-maxpd",
+        "10",
+        "-tsvout",
+        rust_out.to_str().unwrap(),
+        "-threads",
+        "1",
+        "-quiet",
+    ]);
+
+    assert_eq!(
+        std::fs::read_to_string(&rust_out).unwrap(),
+        std::fs::read_to_string(&cpp_out).unwrap(),
+        "searchpd -threads 1 TSV output differs",
+    );
+
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -16646,6 +19544,160 @@ fn original_cpp_qscore_stdout_format_matches_rust() {
 }
 
 #[test]
+fn original_cpp_qscore2_cli_matches_rust_on_small_fixture() {
+    let _global_guard = GLOBAL_STATE_TEST_LOCK.lock().unwrap();
+    let Some(cpp_bin) = original_muscle_bin() else {
+        eprintln!("skipping qscore2 CLI parity test: C++ binary unavailable");
+        return;
+    };
+
+    let root = std::env::temp_dir().join(format!("muscle_rs_qscore2_cli_{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+
+    let test_msa = root.join("test.fa");
+    let ref_msa = root.join("ref.fa");
+    std::fs::write(&test_msa, b">seq1\nA-CG\n>seq2\nAT-G\n").unwrap();
+    std::fs::write(&ref_msa, b">seq1\nACG\n>seq2\nATG\n").unwrap();
+
+    let cpp_out = run_cpp_cli(
+        &cpp_bin,
+        &[
+            "-qscore2",
+            test_msa.to_str().unwrap(),
+            "-ref",
+            ref_msa.to_str().unwrap(),
+            "-max_gap_fract",
+            "1.0",
+        ],
+    );
+    let rust_out = run_rust_cli(&[
+        "-qscore2",
+        test_msa.to_str().unwrap(),
+        "-ref",
+        ref_msa.to_str().unwrap(),
+        "-max_gap_fract",
+        "1.0",
+    ]);
+
+    assert_eq!(
+        original_command_body(&cpp_out),
+        String::from_utf8(rust_out.stdout).unwrap(),
+        "qscore2 CLI output differs",
+    );
+
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn original_cpp_qscoredir_cli_matches_rust_on_small_fixture() {
+    let _global_guard = GLOBAL_STATE_TEST_LOCK.lock().unwrap();
+    let Some(cpp_bin) = original_muscle_bin() else {
+        eprintln!("skipping qscoredir CLI parity test: C++ binary unavailable");
+        return;
+    };
+
+    let root = std::env::temp_dir().join(format!("muscle_rs_qscoredir_cli_{}", std::process::id()));
+    let test_dir = root.join("test");
+    let ref_dir = root.join("ref");
+    std::fs::create_dir_all(&test_dir).unwrap();
+    std::fs::create_dir_all(&ref_dir).unwrap();
+
+    let names = root.join("names.txt");
+    let cpp_out = root.join("cpp.txt");
+    let rust_out = root.join("rust.txt");
+    std::fs::write(&names, b"perfect.fa\ngapped.fa\n").unwrap();
+    std::fs::write(test_dir.join("perfect.fa"), b">seq1\nACG\n>seq2\nATG\n").unwrap();
+    std::fs::write(ref_dir.join("perfect.fa"), b">seq1\nACG\n>seq2\nATG\n").unwrap();
+    std::fs::write(test_dir.join("gapped.fa"), b">seq1\nA-CG\n>seq2\nAT-G\n").unwrap();
+    std::fs::write(ref_dir.join("gapped.fa"), b">seq1\nACG\n>seq2\nATG\n").unwrap();
+
+    run_cpp_cli(
+        &cpp_bin,
+        &[
+            "-qscoredir",
+            names.to_str().unwrap(),
+            "-testdir",
+            test_dir.to_str().unwrap(),
+            "-refdir",
+            ref_dir.to_str().unwrap(),
+            "-output",
+            cpp_out.to_str().unwrap(),
+            "-max_gap_fract",
+            "1.0",
+            "-quiet",
+        ],
+    );
+    run_rust_cli(&[
+        "-qscoredir",
+        names.to_str().unwrap(),
+        "-testdir",
+        test_dir.to_str().unwrap(),
+        "-refdir",
+        ref_dir.to_str().unwrap(),
+        "-output",
+        rust_out.to_str().unwrap(),
+        "-max_gap_fract",
+        "1.0",
+        "-quiet",
+    ]);
+
+    assert_eq!(
+        std::fs::read_to_string(&rust_out).unwrap(),
+        std::fs::read_to_string(&cpp_out).unwrap(),
+        "qscoredir CLI output file differs",
+    );
+
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn original_cpp_strip_gappy_cols_cli_matches_rust_on_real_fixture() {
+    let _global_guard = GLOBAL_STATE_TEST_LOCK.lock().unwrap();
+    let Some(cpp_bin) = original_muscle_bin() else {
+        eprintln!("skipping strip_gappy_cols CLI parity test: C++ binary unavailable");
+        return;
+    };
+
+    let root = std::env::temp_dir().join(format!(
+        "muscle_rs_strip_gappy_cols_cli_{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+
+    let cpp_out = root.join("cpp.fa");
+    let rust_out = root.join("rust.fa");
+    run_cpp_cli(
+        &cpp_bin,
+        &[
+            "-strip_gappy_cols",
+            "muscle/test_data/ref_alns/BB11005",
+            "-output",
+            cpp_out.to_str().unwrap(),
+            "-max_gap_fract",
+            "0.5",
+            "-quiet",
+        ],
+    );
+    run_rust_cli(&[
+        "-strip_gappy_cols",
+        "muscle/test_data/ref_alns/BB11005",
+        "-output",
+        rust_out.to_str().unwrap(),
+        "-max_gap_fract",
+        "0.5",
+        "-quiet",
+    ]);
+
+    assert_eq!(
+        std::fs::read_to_string(&rust_out).unwrap(),
+        std::fs::read_to_string(&cpp_out).unwrap(),
+        "strip_gappy_cols CLI output file differs",
+    );
+
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn original_cpp_super4_matches_rust_byte_for_byte() {
     let _global_guard = GLOBAL_STATE_TEST_LOCK.lock().unwrap();
     let Some(cpp_bin) = original_muscle_bin() else {
@@ -16958,6 +20010,50 @@ fn original_cpp_upgma5_matches_rust_across_linkages() {
 }
 
 #[test]
+fn original_cpp_upgma5_msa_cli_matches_rust_on_small_fixture() {
+    let _global_guard = GLOBAL_STATE_TEST_LOCK.lock().unwrap();
+    let Some(cpp_bin) = original_muscle_bin() else {
+        eprintln!("skipping upgma5_msa CLI parity test: C++ binary unavailable");
+        return;
+    };
+
+    let root =
+        std::env::temp_dir().join(format!("muscle_rs_upgma5_msa_cli_{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+
+    let input = root.join("input.fa");
+    let cpp_out = root.join("cpp.nwk");
+    let rust_out = root.join("rust.nwk");
+    std::fs::write(&input, b">a\nEFIL\n>b\nEFKL\n>c\nPQRS\n").unwrap();
+
+    run_cpp_cli(
+        &cpp_bin,
+        &[
+            "-upgma5_msa",
+            input.to_str().unwrap(),
+            "-output",
+            cpp_out.to_str().unwrap(),
+            "-quiet",
+        ],
+    );
+    run_rust_cli(&[
+        "-upgma5_msa",
+        input.to_str().unwrap(),
+        "-output",
+        rust_out.to_str().unwrap(),
+        "-quiet",
+    ]);
+
+    assert_eq!(
+        std::fs::read_to_string(&rust_out).unwrap(),
+        std::fs::read_to_string(&cpp_out).unwrap(),
+        "upgma5_msa CLI output differs",
+    );
+
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn original_cpp_strip_anchors_and_relabel_match_rust() {
     let _global_guard = GLOBAL_STATE_TEST_LOCK.lock().unwrap();
     let Some(cpp_bin) = original_muscle_bin() else {
@@ -17033,6 +20129,223 @@ fn original_cpp_strip_anchors_and_relabel_match_rust() {
         std::fs::read_to_string(&rs_relabel).unwrap(),
         "relabel-all output differs",
     );
+}
+
+#[test]
+fn original_cpp_make_a2m_and_core_blocks_match_rust_on_small_fixtures() {
+    let _global_guard = GLOBAL_STATE_TEST_LOCK.lock().unwrap();
+    let Some(cpp_bin) = original_muscle_bin() else {
+        eprintln!("skipping make_a2m/core_blocks parity test: C++ binary unavailable");
+        return;
+    };
+
+    let root =
+        std::env::temp_dir().join(format!("muscle_rs_small_cli_parity_{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+
+    let a2m_in = root.join("a2m.fa");
+    let cpp_a2m = root.join("cpp.a2m");
+    let rust_a2m = root.join("rust.a2m");
+    std::fs::write(&a2m_in, b">s1\nAB--\n>s2\nAB-D\n>s3\nABCD\n").unwrap();
+    run_cpp_cli(
+        &cpp_bin,
+        &[
+            "-make_a2m",
+            a2m_in.to_str().unwrap(),
+            "-output",
+            cpp_a2m.to_str().unwrap(),
+            "-quiet",
+        ],
+    );
+    run_rust_cli(&[
+        "-make_a2m",
+        a2m_in.to_str().unwrap(),
+        "-output",
+        rust_a2m.to_str().unwrap(),
+        "-quiet",
+    ]);
+    assert_eq!(
+        std::fs::read_to_string(&rust_a2m).unwrap(),
+        std::fs::read_to_string(&cpp_a2m).unwrap(),
+        "make_a2m output differs",
+    );
+
+    let core_in = root.join("core.fa");
+    let cpp_core = root.join("cpp.core.txt");
+    let rust_core = root.join("rust.core.txt");
+    std::fs::write(&core_in, b">s1\nAB--\n>s2\nAB-D\n>s3\nABCD\n").unwrap();
+    run_cpp_cli(
+        &cpp_bin,
+        &[
+            "-core_blocks",
+            core_in.to_str().unwrap(),
+            "-min_core_block_cols",
+            "2",
+            "-min_core_block_seqs",
+            "2",
+            "-output",
+            cpp_core.to_str().unwrap(),
+            "-quiet",
+        ],
+    );
+    run_rust_cli(&[
+        "-core_blocks",
+        core_in.to_str().unwrap(),
+        "-min_core_block_cols",
+        "2",
+        "-min_core_block_seqs",
+        "2",
+        "-output",
+        rust_core.to_str().unwrap(),
+        "-quiet",
+    ]);
+    assert_eq!(
+        std::fs::read_to_string(&rust_core).unwrap(),
+        std::fs::read_to_string(&cpp_core).unwrap(),
+        "core_blocks output file differs",
+    );
+
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn original_cpp_make_a2m_refseq_cli_matches_rust_on_small_fixture() {
+    let _global_guard = GLOBAL_STATE_TEST_LOCK.lock().unwrap();
+    let Some(cpp_bin) = original_muscle_bin() else {
+        eprintln!("skipping make_a2m_refseq CLI parity test: C++ binary unavailable");
+        return;
+    };
+
+    let root =
+        std::env::temp_dir().join(format!("muscle_rs_a2m_refseq_cli_{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+
+    let input = root.join("input.fa");
+    let cpp_out = root.join("cpp.a2m");
+    let rust_out = root.join("rust.a2m");
+    std::fs::write(&input, b">alpha\nA-C-D\n>ref\nABCD-\n>gamma\nA-CEF\n").unwrap();
+
+    run_cpp_cli(
+        &cpp_bin,
+        &[
+            "-make_a2m_refseq",
+            input.to_str().unwrap(),
+            "-label",
+            "ref",
+            "-output",
+            cpp_out.to_str().unwrap(),
+            "-quiet",
+        ],
+    );
+    run_rust_cli(&[
+        "-make_a2m_refseq",
+        input.to_str().unwrap(),
+        "-label",
+        "ref",
+        "-output",
+        rust_out.to_str().unwrap(),
+        "-quiet",
+    ]);
+
+    assert_eq!(
+        std::fs::read_to_string(&rust_out).unwrap(),
+        std::fs::read_to_string(&cpp_out).unwrap(),
+        "make_a2m_refseq CLI output differs",
+    );
+
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn original_cpp_squeeze_inserts_cli_matches_rust_on_small_fixture() {
+    let _global_guard = GLOBAL_STATE_TEST_LOCK.lock().unwrap();
+    let Some(cpp_bin) = original_muscle_bin() else {
+        eprintln!("skipping squeeze_inserts CLI parity test: C++ binary unavailable");
+        return;
+    };
+
+    let root = std::env::temp_dir().join(format!("muscle_rs_squeeze_cli_{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+
+    let input = root.join("input.fa");
+    let cpp_out = root.join("cpp.fa");
+    let rust_out = root.join("rust.fa");
+    std::fs::write(&input, b">s1\nAAxxBBcc\n>s2\nAA-yBBc-\n>s3\nAA--BB--\n").unwrap();
+
+    run_cpp_cli(
+        &cpp_bin,
+        &[
+            "-squeeze_inserts",
+            input.to_str().unwrap(),
+            "-output",
+            cpp_out.to_str().unwrap(),
+            "-quiet",
+        ],
+    );
+    run_rust_cli(&[
+        "-squeeze_inserts",
+        input.to_str().unwrap(),
+        "-output",
+        rust_out.to_str().unwrap(),
+        "-quiet",
+    ]);
+
+    assert_eq!(
+        std::fs::read_to_string(&rust_out).unwrap(),
+        std::fs::read_to_string(&cpp_out).unwrap(),
+        "squeeze_inserts CLI output differs",
+    );
+
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn original_cpp_profalign_cli_matches_rust_on_small_fixture() {
+    let _global_guard = GLOBAL_STATE_TEST_LOCK.lock().unwrap();
+    let Some(cpp_bin) = original_muscle_bin() else {
+        eprintln!("skipping profalign CLI parity test: C++ binary unavailable");
+        return;
+    };
+
+    let root = std::env::temp_dir().join(format!("muscle_rs_profalign_cli_{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+
+    let input1 = root.join("profile1.fa");
+    let input2 = root.join("profile2.fa");
+    let cpp_out = root.join("cpp.fa");
+    let rust_out = root.join("rust.fa");
+    std::fs::write(&input1, b">a1\nAC\n>a2\nAG\n").unwrap();
+    std::fs::write(&input2, b">b1\nAT\n>b2\nAA\n").unwrap();
+
+    run_cpp_cli(
+        &cpp_bin,
+        &[
+            "-profalign",
+            input1.to_str().unwrap(),
+            "-input2",
+            input2.to_str().unwrap(),
+            "-output",
+            cpp_out.to_str().unwrap(),
+            "-quiet",
+        ],
+    );
+    run_rust_cli(&[
+        "-profalign",
+        input1.to_str().unwrap(),
+        "-input2",
+        input2.to_str().unwrap(),
+        "-output",
+        rust_out.to_str().unwrap(),
+        "-quiet",
+    ]);
+
+    assert_eq!(
+        std::fs::read_to_string(&rust_out).unwrap(),
+        std::fs::read_to_string(&cpp_out).unwrap(),
+        "profalign CLI output differs",
+    );
+
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

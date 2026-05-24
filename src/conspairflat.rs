@@ -13,6 +13,21 @@ pub fn mpc_flat_cons_pair(mpc: &mut MPCFlat, pair_index: uint) {
 /// `mpc`, allowing callers to parallelize pairs and commit by pair index.
 #[track_caller]
 pub fn mpc_flat_cons_pair_result(mpc: &MPCFlat, pair_index: uint) -> MySparseMx {
+    let mut scratch = ConsPairScratch::default();
+    mpc_flat_cons_pair_result_with_scratch(mpc, pair_index, &mut scratch)
+}
+
+#[derive(Default)]
+pub struct ConsPairScratch {
+    post: Vec<f32>,
+}
+
+#[track_caller]
+pub fn mpc_flat_cons_pair_result_with_scratch(
+    mpc: &MPCFlat,
+    pair_index: uint,
+    scratch: &mut ConsPairScratch,
+) -> MySparseMx {
     let (seq_index_x, seq_index_y) = mpc_flat_get_pair(mpc, pair_index);
 
     let lx = mpc_flat_get_seq_length(mpc, seq_index_x);
@@ -28,7 +43,12 @@ pub fn mpc_flat_cons_pair_result(mpc: &MPCFlat, pair_index: uint) -> MySparseMx 
     assert_eq!(sparse_post_xy.lx, lx);
     assert_eq!(sparse_post_xy.ly, ly);
 
-    let mut post = vec![0.0_f32; (lx * ly) as usize];
+    let post_len = (lx * ly) as usize;
+    if scratch.post.len() < post_len {
+        scratch.post.resize(post_len, 0.0);
+    }
+    let post = &mut scratch.post[..post_len];
+    post.fill(0.0);
     let ly_u = ly as usize;
     for row in 0..lx as usize {
         let offset = sparse_post_xy.offsets[row] as usize;
@@ -60,7 +80,7 @@ pub fn mpc_flat_cons_pair_result(mpc: &MPCFlat, pair_index: uint) -> MySparseMx 
             let zy = posts1[pair_index_zy as usize]
                 .as_ref()
                 .unwrap_or_else(|| panic!("missing sparse post {pair_index_zy}"));
-            relax_flat_zx_zy(zx, zy, weight_z, &mut post);
+            relax_flat_zx_zy(zx, zy, weight_z, post);
         } else if seq_index_z < seq_index_y {
             let pair_index_xz = mpc_flat_get_pair_index(mpc, seq_index_x, seq_index_z);
             let pair_index_zy = mpc_flat_get_pair_index(mpc, seq_index_z, seq_index_y);
@@ -70,7 +90,7 @@ pub fn mpc_flat_cons_pair_result(mpc: &MPCFlat, pair_index: uint) -> MySparseMx 
             let zy = posts1[pair_index_zy as usize]
                 .as_ref()
                 .unwrap_or_else(|| panic!("missing sparse post {pair_index_zy}"));
-            relax_flat_xz_zy(xz, zy, weight_z, &mut post);
+            relax_flat_xz_zy(xz, zy, weight_z, post);
         } else {
             let pair_index_xz = mpc_flat_get_pair_index(mpc, seq_index_x, seq_index_z);
             let pair_index_yz = mpc_flat_get_pair_index(mpc, seq_index_y, seq_index_z);
@@ -80,17 +100,12 @@ pub fn mpc_flat_cons_pair_result(mpc: &MPCFlat, pair_index: uint) -> MySparseMx 
             let yz = posts1[pair_index_yz as usize]
                 .as_ref()
                 .unwrap_or_else(|| panic!("missing sparse post {pair_index_yz}"));
-            relax_flat_xz_yz(xz, yz, weight_z, &mut post);
+            relax_flat_xz_yz(xz, yz, weight_z, post);
         }
     }
 
     let mut updated_sparse_post_xy = MySparseMx::default();
-    my_sparse_mx_update_from_post(
-        &mut updated_sparse_post_xy,
-        sparse_post_xy,
-        &post,
-        seq_count,
-    );
+    my_sparse_mx_update_from_post(&mut updated_sparse_post_xy, sparse_post_xy, post, seq_count);
     updated_sparse_post_xy.x = sparse_post_xy.x.clone();
     updated_sparse_post_xy.y = sparse_post_xy.y.clone();
     updated_sparse_post_xy

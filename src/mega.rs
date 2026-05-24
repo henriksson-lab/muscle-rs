@@ -49,9 +49,24 @@ pub static MEGA_STATE: std::sync::LazyLock<std::sync::Mutex<MegaState>> =
     });
 
 pub static MEGA_LOADED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static MEGA_DUPLICATE_SEQUENCE_WARNING_DONE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 #[derive(Clone, Debug, Default)]
 pub struct Mega; // original: Mega (muscle/src/mega.h)
+
+#[derive(Clone, Debug, Default)]
+pub struct MegaScoringSnapshot {
+    pub weights: Vec<f32>,
+    pub log_probs_vec: Vec<Vec<f32>>,
+    pub log_prob_mx_vec: Vec<Vec<Vec<f32>>>,
+    pub log_odds_mx_vec: Vec<Vec<Vec<f32>>>,
+}
+
+#[doc(hidden)]
+pub fn mega_reset_duplicate_sequence_warning_for_tests() {
+    MEGA_DUPLICATE_SEQUENCE_WARNING_DONE.store(false, std::sync::atomic::Ordering::Relaxed);
+}
 
 /// Return the global sequence index for a label, panicking if not found.
 #[track_caller]
@@ -93,6 +108,42 @@ pub fn mega_get_profile_by_label(label: &str) -> Vec<Vec<byte>> {
     mega.profiles[idx].clone()
 }
 
+#[track_caller]
+pub fn mega_with_profiles_by_label<R, F>(label_x: &str, label_y: &str, f: F) -> R
+where
+    F: FnOnce(&[Vec<byte>], &[Vec<byte>]) -> R,
+{
+    let (profile_x_addr, profile_y_addr) = {
+        let mega = MEGA_STATE.lock().unwrap();
+        let idx_x = *mega
+            .label_to_idx
+            .get(label_x)
+            .unwrap_or_else(|| panic!("Mega::GetProfileByLabel({label_x})"))
+            as usize;
+        let idx_y = *mega
+            .label_to_idx
+            .get(label_y)
+            .unwrap_or_else(|| panic!("Mega::GetProfileByLabel({label_y})"))
+            as usize;
+        assert!(idx_x < mega.profiles.len());
+        assert!(idx_y < mega.profiles.len());
+        (
+            &mega.profiles[idx_x] as *const Vec<Vec<byte>> as usize,
+            &mega.profiles[idx_y] as *const Vec<Vec<byte>> as usize,
+        )
+    };
+    // SAFETY: Mega profile storage is process-global and treated as immutable
+    // after `mega_from_file` publishes a fully parsed state. This avoids cloning
+    // large profiles for each posterior pair while preserving the C++ global
+    // profile-table access shape. Callers must not reload Mega concurrently.
+    unsafe {
+        f(
+            &*(profile_x_addr as *const Vec<Vec<byte>>),
+            &*(profile_y_addr as *const Vec<Vec<byte>>),
+        )
+    }
+}
+
 /// Look up a Mega profile by ungapped sequence, optionally panicking when missing.
 #[track_caller]
 pub fn mega_get_profile_by_seq(seq: &str, fail_on_error: bool) -> Option<Vec<Vec<byte>>> {
@@ -107,6 +158,17 @@ pub fn mega_get_profile_by_seq(seq: &str, fail_on_error: bool) -> Option<Vec<Vec
     let idx = *idx as usize;
     assert!(idx < mega.profiles.len());
     Some(mega.profiles[idx].clone())
+}
+
+#[track_caller]
+pub fn mega_get_scoring_snapshot() -> MegaScoringSnapshot {
+    let mega = MEGA_STATE.lock().unwrap();
+    MegaScoringSnapshot {
+        weights: mega.weights.clone(),
+        log_probs_vec: mega.log_probs_vec.clone(),
+        log_prob_mx_vec: mega.log_prob_mx_vec.clone(),
+        log_odds_mx_vec: mega.log_odds_mx_vec.clone(),
+    }
 }
 
 /// Consume and return the next line from the Mega input buffer.
@@ -183,67 +245,68 @@ pub fn mega_from_file(file_name: &str) {
         die("Missing mega filename");
     }
     {
-        let mut mega = MEGA_STATE.lock().unwrap();
-        mega.file_name = file_name.to_string();
-        mega.lines.clear();
-        mega.feature_names.clear();
-        mega.weights.clear();
-        mega.alpha_sizes.clear();
-        mega.labels.clear();
-        mega.profiles.clear();
-        mega.seqs.clear();
-        mega.log_probs_vec.clear();
-        mega.log_prob_mx_vec.clear();
-        mega.log_odds_mx_vec.clear();
-        mega.label_to_idx.clear();
-        mega.seq_to_idx.clear();
-        mega.feature_count = 0;
-        mega.gap_open = f32::MAX;
-        mega.gap_ext = f32::MAX;
-        mega.loaded = true;
-        MEGA_LOADED.store(true, std::sync::atomic::Ordering::Relaxed);
+        let mega = MEGA_STATE.lock().unwrap();
         assert!(mega.feature_names.is_empty());
         assert_eq!(mega.feature_count, 0);
         assert!(mega.profiles.is_empty());
-        mega.lines = std::fs::read_to_string(file_name)
+    }
+
+    let mut local = MegaState {
+        loaded: true,
+        file_name: file_name.to_string(),
+        lines: std::fs::read_to_string(file_name)
             .unwrap_or_else(|e| panic!("OpenStdioFile({file_name}): {e}"))
             .lines()
             .map(|line| line.to_string())
-            .collect();
-        mega.next_line_nr = 0;
-    }
+            .collect(),
+        ..MegaState::default()
+    };
 
-    let flds = mega_get_next_fields(5);
+    let get_next_fields = |mega: &mut MegaState, expected_nr_fields: uint| -> Vec<String> {
+        let idx = mega.next_line_nr as usize;
+        assert!(idx < mega.lines.len());
+        mega.next_line_nr += 1;
+        let line = mega.lines[idx].clone();
+        let fields = split(&line, '\t');
+        if expected_nr_fields != uint::MAX && fields.len() != expected_nr_fields as usize {
+            panic!(
+                "Expected {} fields got {} in '{}'",
+                expected_nr_fields,
+                fields.len(),
+                line
+            );
+        }
+        fields
+    };
+
+    let flds = get_next_fields(&mut local, 5);
     assert_eq!(flds[0], "mega");
     let feature_count = str_to_uint_l1278(&flds[1], false);
     let profile_count = str_to_uint_l1278(&flds[2], false);
-    {
-        let mut mega = MEGA_STATE.lock().unwrap();
-        mega.feature_count = feature_count;
-        mega.gap_open = str_to_float_l1204(&flds[3], false) as f32;
-        mega.gap_ext = str_to_float_l1204(&flds[4], false) as f32;
-        mega.log_probs_vec
-            .resize(feature_count as usize, Vec::new());
-        mega.log_prob_mx_vec
-            .resize(feature_count as usize, Vec::new());
-        mega.log_odds_mx_vec
-            .resize(feature_count as usize, Vec::new());
-    }
+    local.feature_count = feature_count;
+    local.gap_open = str_to_float_l1204(&flds[3], false) as f32;
+    local.gap_ext = str_to_float_l1204(&flds[4], false) as f32;
+    local
+        .log_probs_vec
+        .resize(feature_count as usize, Vec::new());
+    local
+        .log_prob_mx_vec
+        .resize(feature_count as usize, Vec::new());
+    local
+        .log_odds_mx_vec
+        .resize(feature_count as usize, Vec::new());
 
     for feature_idx in 0..feature_count {
-        let flds = mega_get_next_fields(4);
+        let flds = get_next_fields(&mut local, 4);
         assert_eq!(str_to_uint_l1278(&flds[0], false), feature_idx);
         let feature_name = flds[1].clone();
         let alpha_size = str_to_uint_l1278(&flds[2], false);
         let weight = str_to_float_l1204(&flds[3], false) as f32;
-        {
-            let mut mega = MEGA_STATE.lock().unwrap();
-            mega.feature_names.push(feature_name);
-            mega.alpha_sizes.push(alpha_size);
-            mega.weights.push(weight);
-        }
+        local.feature_names.push(feature_name);
+        local.alpha_sizes.push(alpha_size);
+        local.weights.push(weight);
 
-        let flds = mega_get_next_fields(alpha_size + 1);
+        let flds = get_next_fields(&mut local, alpha_size + 1);
         assert_eq!(flds[0], "freqs");
         let mut log_probs = Vec::new();
         for letter in 0..alpha_size as usize {
@@ -253,11 +316,11 @@ pub fn mega_from_file(file_name: &str) {
             }
             log_probs.push(prob.ln());
         }
-        MEGA_STATE.lock().unwrap().log_probs_vec[feature_idx as usize] = log_probs;
+        local.log_probs_vec[feature_idx as usize] = log_probs;
 
         let mut log_prob_mx = vec![vec![0.0_f32; alpha_size as usize]; alpha_size as usize];
         for letter1 in 0..alpha_size {
-            let flds = mega_get_next_fields(letter1 + 2);
+            let flds = get_next_fields(&mut local, letter1 + 2);
             assert_eq!(str_to_uint_l1278(&flds[0], false), letter1);
             for letter2 in 0..=letter1 {
                 let mut prob = str_to_float_l1204(&flds[letter2 as usize + 1], false) as f32;
@@ -269,13 +332,13 @@ pub fn mega_from_file(file_name: &str) {
                 log_prob_mx[letter2 as usize][letter1 as usize] = log_prob;
             }
         }
-        MEGA_STATE.lock().unwrap().log_prob_mx_vec[feature_idx as usize] = log_prob_mx;
+        local.log_prob_mx_vec[feature_idx as usize] = log_prob_mx;
 
-        let flds = mega_get_next_fields(1);
+        let flds = get_next_fields(&mut local, 1);
         assert_eq!(flds[0], "logoddsmx");
         let mut log_odds_mx = vec![vec![0.0_f32; alpha_size as usize]; alpha_size as usize];
         for letter1 in 0..alpha_size {
-            let flds = mega_get_next_fields(letter1 + 3);
+            let flds = get_next_fields(&mut local, letter1 + 3);
             assert_eq!(str_to_uint_l1278(&flds[0], false), letter1);
             let letter_str = &flds[1];
             assert_eq!(letter_str.len(), 1);
@@ -286,33 +349,27 @@ pub fn mega_from_file(file_name: &str) {
                 log_odds_mx[letter2 as usize][letter1 as usize] = score;
             }
         }
-        MEGA_STATE.lock().unwrap().log_odds_mx_vec[feature_idx as usize] = log_odds_mx;
+        local.log_odds_mx_vec[feature_idx as usize] = log_odds_mx;
     }
 
-    {
-        let mut mega = MEGA_STATE.lock().unwrap();
-        mega.profiles.resize(profile_count as usize, Vec::new());
-        mega.seqs.resize(profile_count as usize, String::new());
-    }
+    local.profiles.resize(profile_count as usize, Vec::new());
+    local.seqs.resize(profile_count as usize, String::new());
 
     for profile_idx in 0..profile_count {
-        let flds = mega_get_next_fields(4);
+        let flds = get_next_fields(&mut local, 4);
         assert_eq!(flds[0], "chain");
         assert_eq!(str_to_uint_l1278(&flds[1], false), profile_idx);
         let label = flds[2].clone();
-        {
-            let mut mega = MEGA_STATE.lock().unwrap();
-            if mega.label_to_idx.contains_key(&label) {
-                die(&format!("Duplicate label in mega file >{label}"));
-            }
-            mega.label_to_idx.insert(label.clone(), profile_idx);
-            mega.labels.push(label);
+        if local.label_to_idx.contains_key(&label) {
+            die(&format!("Duplicate label in mega file >{label}"));
         }
+        local.label_to_idx.insert(label.clone(), profile_idx);
+        local.labels.push(label);
         let l = str_to_uint_l1278(&flds[3], false);
         let mut profile = vec![Vec::<byte>::new(); l as usize];
         let mut s = String::new();
         for pos in 0..l {
-            let flds = mega_get_next_fields(3);
+            let flds = get_next_fields(&mut local, 3);
             assert_eq!(str_to_uint_l1278(&flds[0], false), profile_idx);
             assert_eq!(str_to_uint_l1278(&flds[1], false), pos);
             let syms = flds[2].as_bytes();
@@ -355,12 +412,19 @@ pub fn mega_from_file(file_name: &str) {
                 }
             }
         }
-        let mut mega = MEGA_STATE.lock().unwrap();
-        mega.profiles[profile_idx as usize] = profile;
-        mega.seqs[profile_idx as usize] = s.clone();
-        mega.seq_to_idx.insert(s, profile_idx);
+        local.profiles[profile_idx as usize] = profile;
+        local.seqs[profile_idx as usize] = s.clone();
+        if local.seq_to_idx.contains_key(&s)
+            && !MEGA_DUPLICATE_SEQUENCE_WARNING_DONE
+                .swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
+            warning("Duplicate sequences found\n");
+        }
+        local.seq_to_idx.insert(s, profile_idx);
     }
-    MEGA_STATE.lock().unwrap().lines.clear();
+    local.lines.clear();
+    *MEGA_STATE.lock().unwrap() = local;
+    MEGA_LOADED.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Return the weighted log-probability insertion score at one profile position.
@@ -374,6 +438,23 @@ pub fn mega_get_ins_score(profile: &[Vec<byte>], pos: uint) -> f32 {
         let log_probs = &mega.log_probs_vec[i];
         let letter = prof_col[i] as usize;
         score += log_probs[letter] * mega.weights[i];
+    }
+    score
+}
+
+#[inline(always)]
+pub fn mega_scoring_get_ins_score(
+    scoring: &MegaScoringSnapshot,
+    profile: &[Vec<byte>],
+    pos: uint,
+) -> f32 {
+    assert!((pos as usize) < profile.len());
+    let prof_col = &profile[pos as usize];
+    let mut score = 0.0_f32;
+    for i in 0..scoring.weights.len() {
+        let log_probs = &scoring.log_probs_vec[i];
+        let letter = prof_col[i] as usize;
+        score += log_probs[letter] * scoring.weights[i];
     }
     score
 }
@@ -471,6 +552,29 @@ pub fn mega_get_match_score(
     score
 }
 
+#[inline(always)]
+pub fn mega_scoring_get_match_score(
+    scoring: &MegaScoringSnapshot,
+    profile_x: &[Vec<byte>],
+    pos_x: uint,
+    profile_y: &[Vec<byte>],
+    pos_y: uint,
+) -> f32 {
+    assert!((pos_x as usize) < profile_x.len());
+    assert!((pos_y as usize) < profile_y.len());
+    let prof_col_x = &profile_x[pos_x as usize];
+    let prof_col_y = &profile_y[pos_y as usize];
+    let mut score = 0.0_f32;
+    for i in 0..scoring.weights.len() {
+        let subst_mx = &scoring.log_prob_mx_vec[i];
+        let letter_x = prof_col_x[i] as usize;
+        let letter_y = prof_col_y[i] as usize;
+        let letter_pair_score = subst_mx[letter_x][letter_y];
+        score += letter_pair_score * scoring.weights[i];
+    }
+    score
+}
+
 /// Format a labelled float vector as a debug log string.
 #[track_caller]
 pub fn mega_log_vec(name: &str, vec_: &[f32]) -> String {
@@ -509,6 +613,7 @@ pub fn mega_log_mx(name: &str, mx: &[Vec<f32>]) -> String {
         }
         out.push('\n');
     }
+    log(&out);
     out
 }
 
@@ -563,9 +668,9 @@ pub fn mega_log_feature_params(idx: uint) -> String {
         s
     };
     out.push_str(&format!("Feature {name}, weight {weight_s}\n"));
+    log(&out);
     out.push_str(&mega_log_vec(&name, &probs));
     out.push_str(&mega_log_mx(&name, &mx));
-    log(&out);
     out
 }
 

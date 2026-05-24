@@ -20,7 +20,7 @@ pub enum HMMTRANS {
     HMMTRANS_IL_M = 9,
 } // original: HMMTRANS (muscle/src/hmmparams.h)
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct HMMParams {
     pub logs: bool,
     pub line_nr: uint,
@@ -30,6 +30,20 @@ pub struct HMMParams {
     pub lines: Vec<String>,
     pub alpha: String,
 } // original: HMMParams (muscle/src/hmmparams.h)
+
+impl Default for HMMParams {
+    fn default() -> Self {
+        Self {
+            logs: false,
+            line_nr: 0,
+            var: DEFAULT_PERTURB_VAR,
+            trans: Vec::new(),
+            emits: Vec::new(),
+            lines: Vec::new(),
+            alpha: String::new(),
+        }
+    }
+}
 
 /// Process-global `-anchor_letter` override consumed by `hmm_params_to_pair_hmm`.
 pub(crate) static HMM_PARAMS_ANCHOR_LETTER: std::sync::Mutex<Option<u8>> =
@@ -68,6 +82,10 @@ pub fn hmmtrans_to_str(t: HMMTRANS) -> &'static str {
 }
 
 /// Returns `params` as probabilities, converting from log scores if needed.
+///
+/// C++ `HMMParams::GetProbs` appears to call `ProbsToScores` on logged input,
+/// which immediately asserts because that helper requires probability input.
+/// Rust keeps the usable conversion semantics that callers expect.
 #[track_caller]
 pub fn hmm_params_get_probs(params: &HMMParams) -> HMMParams {
     let probs = if params.logs {
@@ -79,7 +97,27 @@ pub fn hmm_params_get_probs(params: &HMMParams) -> HMMParams {
     probs
 }
 
+/// Literal compatibility helper for C++ `HMMParams::GetProbs`.
+///
+/// The original logged-input branch calls `ProbsToScores(*this, Probs)`, so it
+/// validates the logged source as probabilities and aborts before producing
+/// output. Keep this separate from `hmm_params_get_probs`, which preserves the
+/// usable Rust score-to-probability conversion expected by callers.
+#[track_caller]
+pub fn hmm_params_get_probs_cpp_literal(params: &HMMParams) -> HMMParams {
+    let probs = if params.logs {
+        hmm_params_probs_to_scores(params)
+    } else {
+        params.clone()
+    };
+    hmm_params_assert_probs_valid(&probs);
+    probs
+}
+
 /// Converts `params` to either probability or score representation.
+///
+/// C++ `HMMParams::FromParams(..., false)` calls `GetProbs` instead of
+/// `GetScores`; Rust intentionally returns scores for the false branch.
 #[track_caller]
 pub fn hmm_params_from_params(params: &HMMParams, as_probs: bool) -> HMMParams {
     if as_probs {
@@ -87,6 +125,17 @@ pub fn hmm_params_from_params(params: &HMMParams, as_probs: bool) -> HMMParams {
     } else {
         hmm_params_get_scores(params)
     }
+}
+
+/// Literal compatibility helper for C++ `HMMParams::FromParams`.
+///
+/// Both C++ branches call `Params.GetProbs(...)`; the `as_probs == false`
+/// branch therefore still returns probability-shaped data for probability
+/// input, and inherits the logged-input assert behavior above.
+#[track_caller]
+pub fn hmm_params_from_params_cpp_literal(params: &HMMParams, as_probs: bool) -> HMMParams {
+    let _ = as_probs;
+    hmm_params_get_probs_cpp_literal(params)
 }
 
 /// Returns `params` as log scores, converting from probabilities if needed.
@@ -436,21 +485,27 @@ pub fn hmm_params_cmd_line_update(
     }
     assert!(!params.logs);
     if let Some(value) = s_is {
+        set_cmd_opt_used("s_is");
         params.trans[HMMTRANS::HMMTRANS_START_IS as usize] = value;
     }
     if let Some(value) = s_il {
+        set_cmd_opt_used("s_il");
         params.trans[HMMTRANS::HMMTRANS_START_IL as usize] = value;
     }
     if let Some(value) = m_is {
+        set_cmd_opt_used("m_is");
         params.trans[HMMTRANS::HMMTRANS_M_IS as usize] = value;
     }
     if let Some(value) = m_il {
+        set_cmd_opt_used("m_il");
         params.trans[HMMTRANS::HMMTRANS_M_IL as usize] = value;
     }
     if let Some(value) = is_is {
+        set_cmd_opt_used("is_is");
         params.trans[HMMTRANS::HMMTRANS_IS_IS as usize] = value;
     }
     if let Some(value) = il_il {
+        set_cmd_opt_used("il_il");
         params.trans[HMMTRANS::HMMTRANS_IL_IL as usize] = value;
     }
     hmm_params_normalize(params);

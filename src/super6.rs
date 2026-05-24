@@ -2,7 +2,7 @@
 #[allow(unused_imports)]
 use crate::*;
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Super6 {
     pub max_pd_pass1: f64,
     pub max_cluster_size: uint,
@@ -19,6 +19,27 @@ pub struct Super6 {
     pub cluster_msas: Vec<MultiSequence>,
     pub cluster_dist_mx: Vec<Vec<f32>>,
 } // original: Super6 (muscle/src/super6.h)
+
+impl Default for Super6 {
+    fn default() -> Self {
+        Self {
+            max_pd_pass1: 1.5,
+            max_cluster_size: 500,
+            target_pair_count_cluster_dist: 8,
+            target_pair_count: 2000,
+            input_seqs: None,
+            guide_tree: Tree::default(),
+            msa: MultiSequence::default(),
+            ucpd: UClustPD::default(),
+            cluster_mfas: Vec::new(),
+            cluster_labels: Vec::new(),
+            mpc: MPCFlat::default(),
+            pp: PProg::default(),
+            cluster_msas: Vec::new(),
+            cluster_dist_mx: Vec::new(),
+        }
+    }
+}
 
 /// Set Super6 tunables (max PD pass1, max cluster size, target pair counts).
 #[track_caller]
@@ -217,10 +238,11 @@ where
     let pair_count = (cluster_count * (cluster_count - 1)) / 2;
     let mut cluster_index1 = 1usize;
     let mut cluster_index2 = 0usize;
-    for _pair_index in 0..pair_count {
+    for pair_index in 0..pair_count {
+        let _ = progress_step(pair_index as uint, pair_count as uint, "Cluster dist mx");
         let mfa1 = &s6.cluster_mfas[cluster_index1];
         let mfa2 = &s6.cluster_mfas[cluster_index2];
-        let d = get_prot_dist_mfa_pair(mfa1, mfa2, 8);
+        let d = get_prot_dist_mfa_pair(mfa1, mfa2, s6.target_pair_count_cluster_dist);
         s6.cluster_dist_mx[cluster_index1][cluster_index2] = d;
         s6.cluster_dist_mx[cluster_index2][cluster_index1] = d;
 
@@ -249,6 +271,14 @@ where
     let mut u = UPGMA5::default();
     upgma5_init(&mut u, &s6.cluster_labels, &s6.cluster_dist_mx);
     run_upgma(&mut u, &mut s6.guide_tree);
+    let node_count = s6.guide_tree.node_count as usize;
+    if s6.guide_tree.neighbor1.len() >= node_count
+        && s6.guide_tree.neighbor2.len() >= node_count
+        && s6.guide_tree.neighbor3.len() >= node_count
+    {
+        log(&tree_log_me(&s6.guide_tree));
+        tree_to_file_l13(&s6.guide_tree, "guide.newick");
+    }
 }
 
 /// Seed the progressive-aligner state with the cluster MSAs and labels.
@@ -295,11 +325,7 @@ where
         ALPHA::ALPHA_Amino
     });
     init_probcons();
-    set_alpha_l209(if nucleo {
-        ALPHA::ALPHA_Nucleo
-    } else {
-        ALPHA::ALPHA_Amino
-    });
+    set_alphab(nucleo);
 
     let mut s6 = Super6::default();
     super6_set_opts(&mut s6, super6_maxpd1);

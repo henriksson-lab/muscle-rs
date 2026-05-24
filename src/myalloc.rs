@@ -2,6 +2,112 @@
 #[allow(unused_imports)]
 use crate::*;
 
+static LAST_SUM_ALLOC: std::sync::Mutex<f64> = std::sync::Mutex::new(0.0);
+static ALLOC_WARNING_DONE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+unsafe extern "C" {
+    fn malloc(size: usize) -> *mut std::ffi::c_void;
+    fn free(ptr: *mut std::ffi::c_void);
+}
+
+/// Owning raw allocation returned by the C++-equivalent `myalloc_` wrapper.
+///
+/// The pointed-to bytes are intentionally uninitialized, matching `malloc`.
+/// Callers must initialize bytes before reading them.
+pub struct MyAllocRaw {
+    ptr: std::ptr::NonNull<byte>,
+    len: usize,
+}
+
+impl MyAllocRaw {
+    #[track_caller]
+    pub fn as_mut_ptr(&mut self) -> *mut byte {
+        self.ptr.as_ptr()
+    }
+
+    #[track_caller]
+    pub fn as_ptr(&self) -> *const byte {
+        self.ptr.as_ptr()
+    }
+
+    #[track_caller]
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    #[track_caller]
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+
+impl Drop for MyAllocRaw {
+    fn drop(&mut self) {
+        if self.len != 0 {
+            unsafe {
+                free(self.ptr.as_ptr().cast::<std::ffi::c_void>());
+            }
+        }
+    }
+}
+
+fn account_cpp_allocation(bytes: usize) {
+    if ALLOC_WARNING_DONE.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+
+    let mut sum_alloc = SUM_ALLOC.lock().unwrap();
+    let mut last_sum_alloc = LAST_SUM_ALLOC.lock().unwrap();
+    *sum_alloc += bytes as f64;
+    if *sum_alloc - *last_sum_alloc > 1e9 {
+        let ram = get_phys_mem_bytes_l990();
+        let alloced = get_mem_use_bytes_l1008();
+        if alloced > ram * 0.9 {
+            eprintln!(
+                "\n\n=========================================================\n\
+                 WARNING: {} Gb memory allocated so far.\n\
+                 This process may crash soon, or run slowly due to paging.\n\
+                 Typical cause of excessive memory use is large dataset\n\
+                 with long sequences (more than around 15k letters).\n\
+                 =========================================================\n",
+                float_to_str_l1385(alloced / 1e9)
+            );
+            ALLOC_WARNING_DONE.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+    *last_sum_alloc = *sum_alloc;
+}
+
+/// C++-equivalent raw `myalloc_`: returns malloc-owned uninitialized bytes.
+#[track_caller]
+pub fn myalloc_(n: usize, m: usize) -> MyAllocRaw {
+    let bytes = n.wrapping_mul(m);
+    if n != 0 {
+        assert_eq!(bytes / n, m);
+    }
+    account_cpp_allocation(bytes);
+
+    if bytes == 0 {
+        return MyAllocRaw {
+            ptr: std::ptr::NonNull::dangling(),
+            len: 0,
+        };
+    }
+
+    let ptr = unsafe { malloc(bytes).cast::<byte>() };
+    let Some(ptr) = std::ptr::NonNull::new(ptr) else {
+        let alloced = get_mem_use_bytes_l1008();
+        die(&format!(
+            "Out of memory mymalloc({}), alloced {} bytes",
+            float_to_str_l1385(bytes as f64),
+            float_to_str_l1385(alloced)
+        ));
+    };
+
+    MyAllocRaw { ptr, len: bytes }
+}
+
 /// Allocates an `n * m` byte buffer, asserting no overflow, and updates the global allocation total.
 #[track_caller]
 pub fn myalloc(n: usize, m: usize) -> Vec<byte> {

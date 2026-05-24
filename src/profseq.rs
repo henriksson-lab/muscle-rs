@@ -35,7 +35,6 @@ where
     combined_seqs.seqs.push(seq2dg);
     combined_seqs.owners.push(false);
 
-    set_global_input_ms(&combined_seqs);
     mpc_flat_init_seqs(mpc, &combined_seqs);
     mpc_flat_init_pairs(mpc);
     let pair_count = mpc.pairs.len() as uint;
@@ -46,7 +45,10 @@ where
         mpc.weights = vec![1.0; combined_seqs.seqs.len()];
     }
 
+    let mut pair_counter = 0_u32;
     for seq_index1 in 0..seq_count1 {
+        let _ = progress_step(pair_counter, seq_count1, "Calc posteriors");
+        pair_counter += 1;
         let pair_index = mpc_flat_get_pair_index(mpc, seq_index1, seq_count1);
         calc_posterior(mpc, pair_index);
     }

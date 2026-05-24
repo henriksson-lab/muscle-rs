@@ -25,10 +25,11 @@ pub fn mega_calc_fwd_flat_mega(profile_x: &[Vec<byte>], profile_y: &[Vec<byte>],
     let t_im = trans_score[HMMSTATE_IX as usize][HMMSTATE_M as usize];
     let t_jj = trans_score[HMMSTATE_JX as usize][HMMSTATE_JX as usize];
     let t_jm = trans_score[HMMSTATE_JX as usize][HMMSTATE_M as usize];
+    let scoring = mega_get_scoring_snapshot();
 
-    let ins_x0 = mega_get_ins_score(profile_x, 0);
-    let ins_y0 = mega_get_ins_score(profile_y, 0);
-    let emit_x0_y0 = mega_get_match_score(profile_x, 0, profile_y, 0);
+    let ins_x0 = mega_scoring_get_ins_score(&scoring, profile_x, 0);
+    let ins_y0 = mega_scoring_get_ins_score(&scoring, profile_y, 0);
+    let emit_x0_y0 = mega_scoring_get_match_score(&scoring, profile_x, 0, profile_y, 0);
 
     let ly1 = (ly + 1) as usize;
     let base_0_0 = 0usize;
@@ -69,7 +70,7 @@ pub fn mega_calc_fwd_flat_mega(profile_x: &[Vec<byte>], profile_y: &[Vec<byte>],
     base = base_1_0;
     let mut next_base = base + base_inc_i;
     for i in 1..lx {
-        let emit_x = mega_get_ins_score(profile_x, i);
+        let emit_x = mega_scoring_get_ins_score(&scoring, profile_x, i);
         flat[next_base + HMMSTATE_IX as usize] = flat[base + HMMSTATE_IX as usize] + t_ii + emit_x;
         flat[next_base + HMMSTATE_JX as usize] = flat[base + HMMSTATE_JX as usize] + t_jj + emit_x;
         base = next_base;
@@ -79,7 +80,7 @@ pub fn mega_calc_fwd_flat_mega(profile_x: &[Vec<byte>], profile_y: &[Vec<byte>],
     base = base_0_1;
     next_base = base + base_inc_j;
     for j in 1..ly {
-        let emit_y = mega_get_ins_score(profile_y, j);
+        let emit_y = mega_scoring_get_ins_score(&scoring, profile_y, j);
         flat[next_base + HMMSTATE_IY as usize] = flat[base + HMMSTATE_IY as usize] + t_ii + emit_y;
         flat[next_base + HMMSTATE_JY as usize] = flat[base + HMMSTATE_JY as usize] + t_jj + emit_y;
         base = next_base;
@@ -92,10 +93,11 @@ pub fn mega_calc_fwd_flat_mega(profile_x: &[Vec<byte>], profile_y: &[Vec<byte>],
     let mut base_i1_j1 = base_0_0;
 
     for i in 1..=lx {
-        let emit_x = mega_get_ins_score(profile_x, i - 1);
+        let emit_x = mega_scoring_get_ins_score(&scoring, profile_x, i - 1);
         for j in 1..=ly {
-            let emit_y = mega_get_ins_score(profile_y, j - 1);
-            let emit_pair = mega_get_match_score(profile_x, i - 1, profile_y, j - 1);
+            let emit_y = mega_scoring_get_ins_score(&scoring, profile_y, j - 1);
+            let emit_pair =
+                mega_scoring_get_match_score(&scoring, profile_x, i - 1, profile_y, j - 1);
             if i == 1 && j == 1 {
                 flat[base_1_1 + HMMSTATE_M as usize] = t_sm + emit_x0_y0;
             } else {

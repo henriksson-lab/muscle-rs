@@ -30,11 +30,17 @@ pub fn bench_alloc_threads(b: &mut Bench, q2: bool) {
         } else {
             assert_eq!(b.qss.len(), b.thread_count as usize);
         }
+        for m3 in &mut b.m3s {
+            m3.ap = b.ap.clone();
+        }
         return;
     }
     assert!(b.ap.as_ref().unwrap().ready);
     for _ in 0..b.thread_count {
-        b.m3s.push(Muscle3::default());
+        b.m3s.push(Muscle3 {
+            ap: b.ap.clone(),
+            ..Muscle3::default()
+        });
         if q2 {
             b.qs2s.push(QScorer2);
         } else {

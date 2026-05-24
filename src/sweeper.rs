@@ -2,7 +2,7 @@
 #[allow(unused_imports)]
 use crate::*;
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Sweeper {
     pub param_names: Vec<String>,
     pub scores: Vec<f32>,
@@ -33,6 +33,75 @@ pub struct Sweeper {
     pub max_distinct_score_drop: f32,
     pub min_distinct_param_dist: f32,
 } // original: Sweeper (muscle/src/sweeper.h)
+
+impl Default for Sweeper {
+    fn default() -> Self {
+        Self {
+            param_names: Vec::new(),
+            scores: Vec::new(),
+            qs: Vec::new(),
+            tcs: Vec::new(),
+            param_values_vec: Vec::new(),
+            best_score: 0.0,
+            best_indexes: Vec::new(),
+            grid_noise_fract: 0.0,
+            fev_file_name: String::new(),
+            param_count: 0,
+            grid_sizes: Vec::new(),
+            grid_coords: Vec::new(),
+            grid_counter: uint::MAX,
+            grid_count: uint::MAX,
+            spatter_tries_per_iter: uint::MAX,
+            spatter_try: uint::MAX,
+            spatter_iter: uint::MAX,
+            spatter_shrink: f32::MAX,
+            min_delta: 0.05,
+            spatter_failed_iter_count: 0,
+            spatter_seed_indexes: Vec::new(),
+            spatter_deltas: Vec::new(),
+            start_max_distinct_score_drop: 0.04,
+            end_max_distinct_score_drop: 0.01,
+            start_min_distinct_param_dist: 1.0,
+            end_min_distinct_param_dist: 0.2,
+            max_distinct_score_drop: f32::MAX,
+            min_distinct_param_dist: f32::MAX,
+        }
+    }
+}
+
+fn sweeper_format_g4(d: f64) -> String {
+    if d == 0.0 {
+        return "0".to_string();
+    }
+    if !d.is_finite() {
+        return d.to_string();
+    }
+    let exp = d.abs().log10().floor() as i32;
+    let mut s = if exp < -4 || exp >= 4 {
+        let raw = format!("{d:.3e}");
+        let (mantissa, exponent) = raw.split_once('e').unwrap();
+        let mut mantissa = mantissa
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_string();
+        if mantissa == "-0" {
+            mantissa = "0".to_string();
+        }
+        let exp_value = exponent.parse::<i32>().unwrap();
+        let sign = if exp_value >= 0 { '+' } else { '-' };
+        format!("{mantissa}e{sign}{:02}", exp_value.abs())
+    } else {
+        let decimals = (3 - exp).max(0) as usize;
+        format!("{d:.decimals$}")
+    };
+    if !s.contains('e') && !s.contains('E') {
+        s = s.trim_end_matches('0').trim_end_matches('.').to_string();
+    }
+    if s == "-0" {
+        s = "0".to_string();
+    }
+    s
+}
 
 /// Draw a pseudo-random value in `[lo, hi]` using a small-prime modulus.
 #[track_caller]
@@ -382,6 +451,7 @@ pub fn sweeper_log_distinct_top(
             out.push('\n');
         }
     }
+    log(&out);
     out
 }
 
@@ -446,6 +516,7 @@ pub fn sweeper_log_indexes(s: &Sweeper, indexes: &[uint]) -> String {
         }
         out.push('\n');
     }
+    log(&out);
     out
 }
 
@@ -513,6 +584,7 @@ pub fn sweeper_log_top(s: &Sweeper, n: uint) -> String {
         }
         out.push('\n');
     }
+    log(&out);
     out
 }
 
@@ -638,15 +710,42 @@ where
             s.spatter_tries_per_iter = tries_per_iter;
         }
 
+        log("\n");
+        log(&format!(
+            ">>>>> m_SpatterIter={} (max {}, failed {} / {}) <<<<<\n",
+            s.spatter_iter, max_iters, s.spatter_failed_iter_count, max_fail_iters
+        ));
+        log(&format!(
+            "m_MaxDistinctScoreDrop = {}, m_MinDistinctParamDist = {}\n",
+            sweeper_format_g4(f64::from(s.max_distinct_score_drop)),
+            sweeper_format_g4(f64::from(s.min_distinct_param_dist))
+        ));
+        let _ = sweeper_log_spatter_deltas(s);
+
         let (improved, iter_fev) = sweeper_spatter_iter(s, |s, values| get_score(s, values));
         fev.push_str(&iter_fev);
         s.spatter_tries_per_iter = tries_per_iter;
+
+        log(&format!(
+            ">>>>> Improved = {}\n",
+            if improved { 'Y' } else { 'N' }
+        ));
+        let _ = sweeper_log_top(s, 10);
+        let _ = sweeper_log_distinct_top(
+            s,
+            &s.spatter_deltas,
+            8,
+            s.max_distinct_score_drop,
+            s.min_distinct_param_dist,
+            10,
+        );
 
         if improved {
             s.spatter_failed_iter_count = 0;
         } else {
             s.spatter_failed_iter_count += 1;
             if s.spatter_failed_iter_count >= max_fail_iters {
+                log("\nConverged, max failed iters\n");
                 break;
             }
         }
@@ -762,6 +861,7 @@ pub fn sweeper_log_spatter_deltas(s: &Sweeper) -> String {
         out.push_str(&format!("={}", format_g4(s.spatter_deltas[param_index])));
     }
     out.push('\n');
+    log(&out);
     out
 }
 
@@ -780,6 +880,13 @@ where
     );
     assert!(!new_seed_indexes.is_empty());
     s.spatter_seed_indexes = new_seed_indexes;
+
+    log(&format!(
+        "\nIter {} seeds ({}):\n",
+        s.spatter_iter,
+        s.spatter_seed_indexes.len()
+    ));
+    let _ = sweeper_log_indexes(s, &s.spatter_seed_indexes);
 
     let best_score_start = s.best_score;
     let k_count = s.spatter_seed_indexes.len();

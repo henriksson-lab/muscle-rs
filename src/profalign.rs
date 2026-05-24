@@ -47,9 +47,12 @@ where
     mpc_flat_alloc_pair_count(mpc, pair_count);
     mpc_flat_init_dist_mx(mpc);
 
-    let _pair_count2 = seq_count1 * seq_count2;
+    let pair_count2 = seq_count1 * seq_count2;
+    let mut pair_counter = 0_u32;
     for seq_index1 in 0..seq_count1 {
         for seq_index2 in 0..seq_count2 {
+            let _ = progress_step(pair_counter, pair_count2, "Calc posteriors");
+            pair_counter += 1;
             let pair_index = mpc_flat_get_pair_index(mpc, seq_index1, seq_count1 + seq_index2);
             calc_posterior(mpc, pair_index);
         }

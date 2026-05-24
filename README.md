@@ -5,9 +5,7 @@ the crate name has been kept, and this author has learned to check 5 times befor
 
 A Rust implementation of [MUSCLE](https://drive5.com/muscle5) (MUltiple Sequence Comparison by Log-Expectation), a widely-used multiple sequence alignment tool for biological sequences.
 
-**work in progress but near completion**
-
-**do not trust text below; LLM-generated**
+* 2026-05-24: Careful testing on real data now possible. But beware, there is global state that should be removed in future versions!
 
 ## This is an LLM-mediated faithful (hopefully) translation, not the original code! 
 
@@ -32,28 +30,20 @@ But:
 
 This blurb might be out of date. Go to [this page](https://github.com/henriksson-lab/rustification) for the latest information and further information about how we approach translation
 
-
-## Repository Layout
-
-- `src/generated.rs` - translated implementation and Clap CLI definition.
-- `src/lib.rs` - library entry point re-exporting the generated module.
-- `src/main.rs` - binary entry point.
-- `tests/leaf_helpers.rs` - parity, helper, CLI, and real-data tests.
-- `ccc_mapping.toml` - Rust-to-C++ function mapping for CCC.
-- `muscle/src` - original C++ source files.
-- `muscle/test_data` - upstream test data used by parity tests.
-
 ## Build
 
 ```sh
 cargo build --release
 ```
 
-The release binary is written to:
+The default build is library-only. Build the optional CLI binary with:
 
 ```sh
-target/release/muscle_rs
+cargo build --release --features cli-bin
 ```
+
+The release binary is then written to `target/release/muscle_rs` on Unix-like
+systems or `target/release/muscle_rs.exe` on Windows.
 
 ## CLI Usage
 
@@ -76,6 +66,47 @@ Clap also accepts long double-dash forms and hyphen aliases for many options:
 target/release/muscle_rs --strip-gappy-cols input.fa --output stripped.fa
 ```
 
+On Windows, use `target\release\muscle_rs.exe` instead.
+
+## Library Usage
+
+The high-level API uses a builder pattern and runs the translated MUSCLE core
+in-process:
+
+```rust
+use muscle_rs::Muscle;
+
+let aligned = Muscle::builder()
+    .input_fasta(">a\nACDEFG\n>b\nACDFG\n")
+    .threads(5)
+    .build()?
+    .into_fasta();
+```
+
+This currently exposes the normal `-align` path. Calls are serialized inside the
+API because the faithful translation still uses C++-style process-global state
+for options such as thread count, alphabet selection, HMM parameters and progress
+flags.
+
+Removing that global state is required future work for a fully idiomatic and
+concurrently usable Rust library API. The current serialization is a
+compatibility workaround, not the intended long-term design.
+
+Library callers that need exact raw CLI behavior can call the dispatcher
+directly without enabling or spawning the binary:
+
+```rust
+muscle_rs::app::main_with_args(vec![
+    "muscle".into(),
+    "-align".into(),
+    "input.fa".into(),
+    "-output".into(),
+    "out.afa".into(),
+    "-threads".into(),
+    "5".into(),
+]);
+```
+
 ## Testing
 
 Run the standard Rust checks:
@@ -87,8 +118,10 @@ cargo test -- --test-threads=1
 ```
 
 The exact-output parity tests compare translated Rust behavior against an
-in-tree build of the original MUSCLE C++ binary. Build it once before running
-the test suite:
+in-tree build of the original MUSCLE C++ binary. The command below is for a
+Unix-like shell with OpenMP-capable `g++`; on other platforms, set
+`MUSCLE_CPP_BIN` to an existing original MUSCLE binary or let those tests skip.
+Build it once before running the test suite:
 
 ```sh
 cd muscle/src
@@ -104,38 +137,38 @@ The tests also exercise real upstream fixtures in `muscle/test_data`.
 
 ## Benchmarks
 
-These are single-run local measurements on the BAliBASE fixtures in
-`muscle/test_data/fa`, using `/usr/bin/time` wall seconds and max RSS. They are
-intended as translation sanity checks, not stable published benchmarks. Output
-files were byte-identical between C++ and Rust for the `-threads 1` runs below.
+These are single-run local measurements using `/usr/bin/time -v` wall seconds
+and maximum resident set size. They are translation sanity checks, not stable
+published benchmarks. The C++ binary is `muscle/src/muscle`; the Rust binary is
+`target/release/muscle_rs`.
 
-### `-threads 1`
+The BAliBASE rows use fixtures from `muscle/test_data/fa`. C++ and Rust outputs
+were byte-identical except for `-super6 BB11005 -threads 5`, which is
+thread-order sensitive in the original clustering path. Ratio columns are
+`C++ / Rust`, so values above `1.00x` mean Rust is faster or uses less RSS.
 
-| Command | Fixture | C++ time | Rust time | C++ RSS | Rust RSS |
-|---|---:|---:|---:|---:|---:|
-| `-align` | BB11005 | 9.93s | 3.47s | 29.5 MiB | 64.6 MiB |
-| `-align` | BB11007 | 4.84s | 1.82s | 21.4 MiB | 16.4 MiB |
-| `-super5` | BB11005 | 17.37s | 10.23s | 36.4 MiB | 16.8 MiB |
-| `-super5` | BB11007 | 6.42s | 4.55s | 24.5 MiB | 16.9 MiB |
-| `-super6` | BB11005 | 5.11s | 3.61s | 29.4 MiB | 31.8 MiB |
-| `-super6` | BB11007 | 3.58s | 1.77s | 21.1 MiB | 15.9 MiB |
+| Command | Fixture | Threads | C++ time | Rust time | Speed ratio | C++ RSS | Rust RSS | RSS ratio | Same output |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| `-align` | BB11005 | 5 | 1.38s | 0.98s | 1.41x | 104.5 MiB | 48.8 MiB | 2.14x | yes |
+| `-align` | BB11007 | 5 | 0.60s | 0.50s | 1.20x | 64.9 MiB | 44.4 MiB | 1.46x | yes |
+| `-super5` | BB11005 | 1 | 9.45s | 9.71s | 0.97x | 36.2 MiB | 21.4 MiB | 1.69x | yes |
+| `-super5` | BB11005 | 5 | 4.97s | 9.70s | 0.51x | 128.8 MiB | 36.0 MiB | 3.58x | yes |
+| `-super5` | BB11007 | 1 | 4.27s | 4.34s | 0.98x | 25.1 MiB | 17.0 MiB | 1.48x | yes |
+| `-super5` | BB11007 | 5 | 2.47s | 4.63s | 0.53x | 78.8 MiB | 37.7 MiB | 2.09x | yes |
+| `-super6` | BB11005 | 1 | 3.73s | 3.61s | 1.03x | 29.2 MiB | 19.9 MiB | 1.47x | yes |
+| `-super6` | BB11005 | 5 | 1.36s | 3.23s | 0.42x | 107.7 MiB | 61.5 MiB | 1.75x | no |
+| `-super6` | BB11007 | 1 | 1.52s | 1.49s | 1.02x | 21.8 MiB | 17.4 MiB | 1.25x | yes |
+| `-super6` | BB11007 | 5 | 0.58s | 1.07s | 0.54x | 62.9 MiB | 45.3 MiB | 1.39x | yes |
 
-### `-threads 5`
+The RDRP fixture is a deterministic subset containing the first 25 sequences
+from `muscle/test_data/rdrp/rdrp.fa` (`25` sequences, `10059` residues, max
+length `471`, average length `402.36`). C++ and Rust outputs were
+byte-identical.
 
-The original C++ binary uses OpenMP in these paths and is faster at five
-threads on these small fixtures, with substantially higher RSS. Rust currently
-keeps memory use low but does not get comparable thread scaling here. The
-`-super6 BB11005` output was not byte-identical at `-threads 5`; this command is
-known to be thread-order sensitive in the original clustering path.
-
-| Command | Fixture | C++ time | Rust time | C++ RSS | Rust RSS |
-|---|---:|---:|---:|---:|---:|
-| `-align` | BB11005 | 1.29s | 3.57s | 103.7 MiB | 64.0 MiB |
-| `-align` | BB11007 | 0.47s | 1.70s | 63.7 MiB | 44.8 MiB |
-| `-super5` | BB11005 | 4.54s | 9.43s | 129.3 MiB | 18.4 MiB |
-| `-super5` | BB11007 | 2.27s | 4.23s | 78.8 MiB | 18.7 MiB |
-| `-super6` | BB11005 | 1.17s | 3.80s | 108.9 MiB | 28.2 MiB |
-| `-super6` | BB11007 | 0.59s | 1.65s | 63.1 MiB | 31.9 MiB |
+| Command | Fixture | Threads | C++ time | Rust time | Speed ratio | C++ RSS | Rust RSS | RSS ratio |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `-align` | RDRP25 | 1 | 19.13s | 11.13s | 1.72x | 43.0 MiB | 24.0 MiB | 1.79x |
+| `-align` | RDRP25 | 5 | 5.86s | 2.96s | 1.98x | 109.9 MiB | 53.4 MiB | 2.06x |
 
 
 ## Faithfulness note: unstable quicksort

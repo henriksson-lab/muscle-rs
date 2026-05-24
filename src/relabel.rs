@@ -45,6 +45,11 @@ pub fn cmd_relabel(
                 &seq.label,
             ));
             _not_found += 1;
+            if _not_found < 10 {
+                progress_log(&format!("Not found >{}\n", seq.label));
+            } else if _not_found == 10 {
+                progress_log("10+ Not found\n");
+            }
         }
     }
 

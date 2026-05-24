@@ -5,6 +5,8 @@ use crate::*;
 /// Reconstructs the amino-acid consensus string from a Mega-profile's `AA` feature column.
 #[track_caller]
 pub fn get_mega_profile_aa_seq(profile: &[Vec<byte>]) -> String {
+    const LETTER_TO_CHAR_AMINO: &[u8; 21] = b"ACDEFGHIKLMNPQRSTVWY*";
+
     let mega = MEGA_STATE.lock().unwrap();
     let mut pi = uint::MAX;
     for i in 0..mega.feature_names.len() {
@@ -14,10 +16,11 @@ pub fn get_mega_profile_aa_seq(profile: &[Vec<byte>]) -> String {
         }
     }
     assert_ne!(pi, uint::MAX);
-    let state = ALPHA_STATE.lock().unwrap();
     let mut seq = String::new();
     for row in profile {
-        seq.push(state.letter_to_char[row[pi as usize] as usize] as char);
+        let letter = row[pi as usize] as usize;
+        let c = LETTER_TO_CHAR_AMINO.get(letter).copied().unwrap_or(b'?');
+        seq.push(c as char);
     }
     seq
 }

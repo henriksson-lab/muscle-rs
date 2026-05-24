@@ -54,13 +54,48 @@ pub fn get_msa_col_is_aligned(aln: &MultiSequence, col: uint) -> bool {
     upper_count > 0
 }
 
+/// C++ `GetMSAColIsAligned` when `optset_max_gap_fract` is enabled:
+/// classify a column as aligned by gap fraction only.
+#[track_caller]
+pub fn get_msa_col_is_aligned_max_gap_fract(
+    aln: &MultiSequence,
+    col: uint,
+    max_gap_fract: f64,
+) -> bool {
+    let seq_count = aln.seqs.len();
+    if seq_count == 0 {
+        return false;
+    }
+
+    let mut gap_count = 0usize;
+    for seq in &aln.seqs {
+        let c = seq.char_vec[col as usize];
+        if c == '-' || c == '.' {
+            gap_count += 1;
+        } else if c.is_ascii_alphabetic() {
+        } else {
+            panic!("Unexpected sequence char '{c}'");
+        }
+    }
+    (gap_count as f64) / (seq_count as f64) <= max_gap_fract
+}
+
 /// Apply `get_msa_col_is_aligned` to every column of `aln`.
 #[track_caller]
 pub fn get_msa_col_aligned_vec(aln: &MultiSequence) -> Vec<bool> {
+    get_msa_col_aligned_vec_by(aln, get_msa_col_is_aligned)
+}
+
+/// Apply a C++-shape column-classification callback to every column of `aln`.
+#[track_caller]
+pub fn get_msa_col_aligned_vec_by<F>(aln: &MultiSequence, mut is_aligned: F) -> Vec<bool>
+where
+    F: FnMut(&MultiSequence, uint) -> bool,
+{
     let col_count = multi_sequence_get_col_count(aln);
     let mut aligned_vec = Vec::new();
     for col in 0..col_count {
-        let al = get_msa_col_is_aligned(aln, col);
+        let al = is_aligned(aln, col);
         aligned_vec.push(al);
     }
     aligned_vec
@@ -69,6 +104,15 @@ pub fn get_msa_col_aligned_vec(aln: &MultiSequence) -> Vec<bool> {
 /// Collapse unaligned insert columns into compact blocks, centering each per-sequence insert with `.` padding.
 #[track_caller]
 pub fn squeeze_inserts(aln: &MultiSequence) -> MultiSequence {
+    squeeze_inserts_by(aln, get_msa_col_is_aligned)
+}
+
+/// Collapse insert columns using a caller-supplied C++ column predicate.
+#[track_caller]
+pub fn squeeze_inserts_by<F>(aln: &MultiSequence, mut is_aligned: F) -> MultiSequence
+where
+    F: FnMut(&MultiSequence, uint) -> bool,
+{
     let seq_count = aln.seqs.len();
     let col_count = multi_sequence_get_col_count(aln);
 
@@ -83,7 +127,7 @@ pub fn squeeze_inserts(aln: &MultiSequence) -> MultiSequence {
         ungapped_seqs.push(ungapped_seq);
     }
 
-    let als = get_msa_col_aligned_vec(aln);
+    let als = get_msa_col_aligned_vec_by(aln, |msa, col| is_aligned(msa, col));
     let (los, his) = get_insert_lo_his(&als);
     let range_count = los.len();
     if range_count == 0 {
@@ -193,9 +237,19 @@ pub fn squeeze_inserts(aln: &MultiSequence) -> MultiSequence {
 
 /// Driver: read a FASTA MSA, squeeze its inserts, and write the compacted MSA back to disk.
 #[track_caller]
-pub fn cmd_squeeze_inserts(input_file_name: &str, output_file_name: &str) -> MultiSequence {
+pub fn cmd_squeeze_inserts(
+    input_file_name: &str,
+    output_file_name: &str,
+    max_gap_fract: Option<f64>,
+) -> MultiSequence {
     let input_msa = msa_from_fasta_file_preserve_case(input_file_name);
-    let out_msa = squeeze_inserts(&input_msa);
+    let out_msa = if let Some(max_gap_fract) = max_gap_fract {
+        squeeze_inserts_by(&input_msa, |msa, col| {
+            get_msa_col_is_aligned_max_gap_fract(msa, col, max_gap_fract)
+        })
+    } else {
+        squeeze_inserts(&input_msa)
+    };
     msa_to_fasta_file_l103(&out_msa, output_file_name);
     out_msa
 }

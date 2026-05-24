@@ -4,7 +4,7 @@ use crate::*;
 
 pub const DEFAULT_PERTURB_VAR: f32 = 0.25;
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct M3AlnParams {
     pub subst_mx_letter: [[f32; 20]; 20],
     pub gap_open: f32,
@@ -26,6 +26,32 @@ pub struct M3AlnParams {
     pub center: f32,
     pub min_std_rand: uint,
 } // original: M3AlnParams (muscle/src/m3alnparams.h)
+
+impl Default for M3AlnParams {
+    fn default() -> Self {
+        Self {
+            subst_mx_letter: [[0.0; 20]; 20],
+            gap_open: f32::MAX,
+            center_added: false,
+            perturb_seed: 0,
+            perturb_subst_mx_delta: 0.0,
+            perturb_gap_params_delta: 0.0,
+            perturb_dist_mx_delta: 0.0,
+            perturb_subst_mx_done: false,
+            perturb_gap_params_done: false,
+            nuc_match_score: f32::MAX,
+            nuc_mismatch_score: f32::MAX,
+            term_gap_open: f32::MAX,
+            term_gap_ext: f32::MAX,
+            ready: false,
+            linkage: "min".to_string(),
+            tree_iters: 1,
+            kmer_dist: "66".to_string(),
+            center: f32::MAX,
+            min_std_rand: 1,
+        }
+    }
+}
 
 /// Perturbs `param` by a random signed delta bounded by `max_delta` (const-overload variant).
 #[track_caller]
@@ -137,6 +163,7 @@ pub fn m3_aln_params_print(ap: &M3AlnParams) -> String {
         }
         out.push('\n');
     }
+    log(&out);
     out
 }
 
@@ -168,6 +195,34 @@ pub fn m3_aln_params_set_blosum(
     perturb_gap_params_delta: f32,
     perturb_dist_mx_delta: f32,
 ) {
+    m3_aln_params_set_blosum_with_log(
+        ap,
+        pct_id,
+        n,
+        gap_open,
+        center,
+        perturb_seed,
+        perturb_subst_mx_delta,
+        perturb_gap_params_delta,
+        perturb_dist_mx_delta,
+        false,
+    );
+}
+
+/// Initializes the parameters from a BLOSUM matrix and optionally logs like C++ `DoLog`.
+#[track_caller]
+pub fn m3_aln_params_set_blosum_with_log(
+    ap: &mut M3AlnParams,
+    pct_id: uint,
+    n: uint,
+    gap_open: f32,
+    center: f32,
+    perturb_seed: uint,
+    perturb_subst_mx_delta: f32,
+    perturb_gap_params_delta: f32,
+    perturb_dist_mx_delta: f32,
+    do_log: bool,
+) -> Option<String> {
     set_alpha_lc(false);
     ap.perturb_seed = perturb_seed;
     ap.perturb_subst_mx_delta = perturb_subst_mx_delta;
@@ -191,6 +246,11 @@ pub fn m3_aln_params_set_blosum(
     m3_aln_params_add_center(ap, ap.center);
     m3_aln_params_perturb_my_params(ap);
     ap.ready = true;
+    if do_log {
+        Some(m3_aln_params_print(ap))
+    } else {
+        None
+    }
 }
 
 /// Overwrites the substitution matrix and gap parameters with externally supplied values.
@@ -201,6 +261,18 @@ pub fn m3_aln_params_update_mx(
     gap_open: f32,
     center: f32,
 ) {
+    let _ = m3_aln_params_update_mx_with_log(ap, subst_mx_letter, gap_open, center, false);
+}
+
+/// Overwrites the substitution matrix and optionally logs like C++ `DoLog`.
+#[track_caller]
+pub fn m3_aln_params_update_mx_with_log(
+    ap: &mut M3AlnParams,
+    subst_mx_letter: &[[f32; 20]; 20],
+    gap_open: f32,
+    center: f32,
+    do_log: bool,
+) -> Option<String> {
     set_alpha_lc(false);
     for i in 0..20 {
         for j in 0..20 {
@@ -214,6 +286,11 @@ pub fn m3_aln_params_update_mx(
     ap.center = center;
     m3_aln_params_add_center(ap, ap.center);
     ap.ready = true;
+    if do_log {
+        Some(m3_aln_params_print(ap))
+    } else {
+        None
+    }
 }
 
 /// Builds the M3 parameter block from command-line options (subst-mx file or BLOSUM).

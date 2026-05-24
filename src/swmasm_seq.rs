@@ -84,14 +84,16 @@ where
         let (score, loi, loj, _leni, _lenj, path) =
             sw_fast_masm_seq(&mut mem, &m, q, gap_open, gap_ext);
         let label = q.label.chars().take(16).collect::<String>();
-        out.push_str(&format!(
+        let query_log = format!(
             "{:>10}  {:>16}  {:7}  {:7}  {}\n\n",
             format_g3(score),
             label,
             loi,
             loj,
             path
-        ));
+        );
+        log(&query_log);
+        out.push_str(&query_log);
     }
     out
 }

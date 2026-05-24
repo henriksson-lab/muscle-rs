@@ -30,17 +30,19 @@ where
     FCmdLineUpdate: FnMut(&mut HMMParams),
     FRunMpc: FnMut(&mut MPCFlat, &MultiSequence) -> MultiSequence,
 {
+    if !output_enabled {
+        return (HMMParams::default(), String::new());
+    }
+
     let nucleo = ALPHA_STATE.lock().unwrap().alpha == ALPHA::ALPHA_Nucleo;
     // Mirror C++ setprobconsparams.cpp:13-19: `-hmmin` replaces the built-in
     // defaults *before* CmdLineUpdate / perturb / publish-to-pair-hmm.
     let mut hp = if let Some(path) = HMMIN_PATH.lock().unwrap().clone() {
+        set_cmd_opt_used("hmmin");
         hmm_params_from_file(&path)
     } else {
         hmm_params_from_defaults(nucleo)
     };
-    if !output_enabled {
-        return (hp, String::new());
-    }
 
     cmd_line_update(&mut hp);
     if perturb_seed > 0 {
@@ -50,6 +52,7 @@ where
     // C++ setprobconsparams.cpp:37-38: optional dump of (possibly perturbed)
     // params before publishing them to the global pair-HMM tables.
     if let Some(path) = HMMOUT_PATH.lock().unwrap().clone() {
+        set_cmd_opt_used("hmmout");
         let _ = hmm_params_to_file(&hp, &path);
     }
     hmm_params_to_pair_hmm(&hp);
@@ -91,7 +94,6 @@ where
 {
     let mut input_seqs = MultiSequence::default();
     multi_sequence_load_mfa_l8(&mut input_seqs, input_file_name, true);
-    set_global_input_ms(&input_seqs);
     set_global_input_ms(&input_seqs);
     let input_seq_count = input_seqs.seqs.len() as uint;
 

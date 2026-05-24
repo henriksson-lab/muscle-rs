@@ -99,7 +99,7 @@ pub fn trans_aln_log_me(ta: &TransAln) -> String {
     }
 
     for i in 0..ta.t_paths1.len() {
-        out.push_str(&trans_aln_log_t_path1_aln(ta, i as uint));
+        out.push_str(&trans_aln_render_t_path1_aln(ta, i as uint));
     }
 
     out.push('\n');
@@ -115,16 +115,17 @@ pub fn trans_aln_log_me(ta: &TransAln) -> String {
     out.push_str(&format!("{}\n", ta.m_path));
 
     for i in 0..ta.t_paths2.len() {
-        out.push_str(&trans_aln_log_t_path2_aln(ta, i as uint, true));
+        out.push_str(&trans_aln_render_t_path2_aln(ta, i as uint, true));
     }
 
     out.push('\n');
     for i in 0..msa_count {
-        out.push_str(&trans_aln_log_m_path_aln(ta, i, false));
+        out.push_str(&trans_aln_render_m_path_aln(ta, i, false));
     }
     for i in 0..ta.t_paths2.len() {
-        out.push_str(&trans_aln_log_t_path2_aln(ta, i as uint, false));
+        out.push_str(&trans_aln_render_t_path2_aln(ta, i as uint, false));
     }
+    log(&out);
     out
 }
 
@@ -486,6 +487,13 @@ pub fn trans_aln_make_t_path2(ta: &TransAln, fresh_index: uint) -> String {
 /// Renders a fresh-vs-MSA alignment row using path1 for inspection.
 #[track_caller]
 pub fn trans_aln_log_t_path1_aln(ta: &TransAln, fresh_index: uint) -> String {
+    let out = trans_aln_render_t_path1_aln(ta, fresh_index);
+    log(&out);
+    out
+}
+
+#[track_caller]
+fn trans_aln_render_t_path1_aln(ta: &TransAln, fresh_index: uint) -> String {
     let t_path1 = trans_aln_get_t_path1(ta, fresh_index);
     let msa_index = trans_aln_get_msa_index(ta, fresh_index);
     let f = trans_aln_get_fresh_seq(ta, fresh_index);
@@ -531,6 +539,13 @@ pub fn trans_aln_log_t_path1_aln(ta: &TransAln, fresh_index: uint) -> String {
 /// Renders a fresh-vs-MSA alignment row using path2 for inspection.
 #[track_caller]
 pub fn trans_aln_log_t_path2_aln(ta: &TransAln, fresh_index: uint, with_path: bool) -> String {
+    let out = trans_aln_render_t_path2_aln(ta, fresh_index, with_path);
+    log(&out);
+    out
+}
+
+#[track_caller]
+fn trans_aln_render_t_path2_aln(ta: &TransAln, fresh_index: uint, with_path: bool) -> String {
     let t_path2 = trans_aln_get_t_path2(ta, fresh_index);
     let msa_index = trans_aln_get_msa_index(ta, fresh_index);
     let f = trans_aln_get_fresh_seq(ta, fresh_index);
@@ -582,6 +597,13 @@ pub fn trans_aln_log_t_path2_aln(ta: &TransAln, fresh_index: uint, with_path: bo
 /// Renders an MSA sequence under the master path for inspection.
 #[track_caller]
 pub fn trans_aln_log_m_path_aln(ta: &TransAln, msa_index: uint, with_path: bool) -> String {
+    let out = trans_aln_render_m_path_aln(ta, msa_index, with_path);
+    log(&out);
+    out
+}
+
+#[track_caller]
+fn trans_aln_render_m_path_aln(ta: &TransAln, msa_index: uint, with_path: bool) -> String {
     let m = trans_aln_get_msa_seq(ta, msa_index);
     let m_label = trans_aln_get_msa_label(ta, msa_index);
     let mut msa_col = 0usize;

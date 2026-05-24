@@ -2,7 +2,7 @@
 #[allow(unused_imports)]
 use crate::*;
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct UClust {
     pub input_seqs: Option<MultiSequence>,
     pub min_ea: f32,
@@ -11,6 +11,19 @@ pub struct UClust {
     pub seq_index_to_centroid_seq_index: Vec<uint>,
     pub seq_index_to_path: Vec<String>,
 } // original: UClust (muscle/src/uclust.h)
+
+impl Default for UClust {
+    fn default() -> Self {
+        Self {
+            input_seqs: None,
+            min_ea: 0.99,
+            us: USorter::default(),
+            centroid_seq_indexes: Vec::new(),
+            seq_index_to_centroid_seq_index: Vec::new(),
+            seq_index_to_path: Vec::new(),
+        }
+    }
+}
 
 /// Align two input sequences by index via the supplied pair-alignment callback.
 #[track_caller]
@@ -133,9 +146,12 @@ where
         assert!(l <= last_length);
         last_length = l;
 
-        out.push_str(&format!(
-            "UCLUST {input_seq_count} seqs EE<{min_ee:.2}, {centroid_count} centroids, {member_count} members\n"
-        ));
+        let progress_msg = format!(
+            "UCLUST {input_seq_count} seqs EE<{min_ee:.2}, {centroid_count} centroids, {member_count} members"
+        );
+        let _ = progress_step(k, input_seq_count, &progress_msg);
+        out.push_str(&progress_msg);
+        out.push('\n');
 
         let (mut rep_seq_index, path) = u_clust_search(u, seq_index, |label1, label2| {
             align_pair_flat(label1, label2)

@@ -13,7 +13,7 @@ pub fn p_prog_get_post_pairs_aligned_flat(
     seq_indexes2: &[uint],
     sparse_posts: &mut Vec<MySparseMx>,
 ) -> f32 {
-    let _progress_str = if progress_str.len() > 20 {
+    let progress_str = if progress_str.len() > 20 {
         &progress_str[..20]
     } else {
         progress_str
@@ -29,6 +29,11 @@ pub fn p_prog_get_post_pairs_aligned_flat(
 
     let mut sum_ea = 0.0_f32;
     for pair_index in 0..pair_count {
+        let min = seq_count1.min(seq_count2);
+        let max = seq_count1.max(seq_count2);
+        let progress_msg = format!("{progress_str} [{min} x {max}, {pair_count} pairs]");
+        let _ = progress_step(pair_index, pair_count, &progress_msg);
+
         let (sparse_post, ea) = p_prog_calc_post_pair_aligned_flat_result(
             msa1,
             msa2,

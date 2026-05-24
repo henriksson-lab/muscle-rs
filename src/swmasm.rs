@@ -73,16 +73,19 @@ where
         s
     };
     for i in 0..query_profile_count {
+        let _ = progress_step(i, query_profile_count, "Aligning");
         let q = mega_get_profile(i);
         let label_q = mega_get_label(i);
         let (score, loi, loj, _leni, _lenj, path) = sw_fast_masm(&mut mem, &m, &q);
         if !path.is_empty() {
-            out.push_str(&write_local_aln_masm(
-                &label_m, &m, &label_q, &q, loi, loj, &path,
-            ));
+            let aln_log = write_local_aln_masm(&label_m, &m, &label_q, &q, loi, loj, &path);
+            log(&aln_log);
+            out.push_str(&aln_log);
         }
         let score_s = format_g3(score);
-        out.push_str(&format!("Score = {score_s}\n\n"));
+        let score_log = format!("Score = {score_s}\n\n");
+        log(&score_log);
+        out.push_str(&score_log);
         tab.push_str(&format!("{}\t{}\t{}\n", label_m, label_q, score_s));
     }
     if !output_file_name.is_empty() {

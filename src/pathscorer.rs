@@ -19,12 +19,22 @@ impl Default for PathScorer {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct PathScorerMASMMega {
     pub base: PathScorer,
-    pub masm: Option<Box<MASM>>,
-    pub mega_profile: Vec<Vec<byte>>,
+    pub masm: *const MASM,
+    pub mega_profile: *const [Vec<byte>],
 } // original: PathScorer_MASM_Mega (muscle/src/pathscorer.h)
+
+impl Default for PathScorerMASMMega {
+    fn default() -> Self {
+        Self {
+            base: PathScorer::default(),
+            masm: std::ptr::null(),
+            mega_profile: std::ptr::slice_from_raw_parts(std::ptr::null(), 0),
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct PathScorerAABLOSUM62 {
@@ -64,6 +74,7 @@ where
     assert!(col_count > 0);
     assert_eq!(path.as_bytes()[0], b'M');
     assert_eq!(path.as_bytes()[col_count as usize - 1], b'M');
+    assert!(la != uint::MAX && lb != uint::MAX);
 
     let mut total = 0.0;
     let mut last_state = 'M';
@@ -134,10 +145,28 @@ where
 /// Initialises the MASM-vs-mega-profile scorer with the given MASM and profile columns.
 #[track_caller]
 pub fn path_scorer_masm_mega_init(ps: &mut PathScorerMASMMega, ma: &MASM, pb: &[Vec<byte>]) {
-    ps.masm = Some(Box::new(ma.clone()));
-    ps.mega_profile = pb.to_vec();
+    ps.masm = ma as *const MASM;
+    ps.mega_profile = pb as *const [Vec<byte>];
     ps.base.la = ma.col_count;
     ps.base.lb = pb.len() as uint;
+}
+
+#[track_caller]
+fn path_scorer_masm_mega_get_masm(ps: &PathScorerMASMMega) -> &MASM {
+    assert!(!ps.masm.is_null(), "PathScorer_MASM_Mega m_MASM is null");
+    // C++ stores a raw MASM pointer. Rust mirrors that lifecycle here; callers
+    // must keep the MASM alive and must not mutate it concurrently.
+    unsafe { &*ps.masm }
+}
+
+#[track_caller]
+fn path_scorer_masm_mega_get_profile(ps: &PathScorerMASMMega) -> &[Vec<byte>] {
+    assert!(
+        !ps.mega_profile.is_null(),
+        "PathScorer_MASM_Mega m_MegaProfile is null"
+    );
+    // C++ stores a pointer to the caller-owned profile vector.
+    unsafe { &*ps.mega_profile }
 }
 
 /// Returns the M-state match score for `(pos_a, pos_b)` (MASM column vs mega profile position).
@@ -147,14 +176,12 @@ pub fn path_scorer_masm_mega_get_match_score(
     pos_a: uint,
     pos_b: uint,
 ) -> f32 {
-    let masm = ps
-        .masm
-        .as_ref()
-        .expect("PathScorer_MASM_Mega m_MASM is null");
+    let masm = path_scorer_masm_mega_get_masm(ps);
+    let mega_profile = path_scorer_masm_mega_get_profile(ps);
     assert!(pos_a < masm.col_count);
-    assert!((pos_b as usize) < ps.mega_profile.len());
+    assert!((pos_b as usize) < mega_profile.len());
     let mcol = &masm.cols[pos_a as usize];
-    let ppos = &ps.mega_profile[pos_b as usize];
+    let ppos = &mega_profile[pos_b as usize];
     masm_col_get_match_score_mega_profile_pos(mcol, ppos)
 }
 
@@ -175,10 +202,7 @@ pub fn path_scorer_masm_mega_get_score_md(
     pos_a: uint,
     _pos_b: uint,
 ) -> f32 {
-    let masm = ps
-        .masm
-        .as_ref()
-        .expect("PathScorer_MASM_Mega m_MASM is null");
+    let masm = path_scorer_masm_mega_get_masm(ps);
     assert!(pos_a < masm.col_count);
     -masm.cols[pos_a as usize].gap_open
 }
@@ -190,10 +214,7 @@ pub fn path_scorer_masm_mega_get_score_mi(
     _pos_a: uint,
     _pos_b: uint,
 ) -> f32 {
-    let masm = ps
-        .masm
-        .as_ref()
-        .expect("PathScorer_MASM_Mega m_MASM is null");
+    let masm = path_scorer_masm_mega_get_masm(ps);
     assert!(masm.gap_open != f32::MAX);
     let score = -masm.gap_open / 2.0;
     assert!(score <= 0.0);
@@ -207,10 +228,7 @@ pub fn path_scorer_masm_mega_get_score_dm(
     pos_a: uint,
     _pos_b: uint,
 ) -> f32 {
-    let masm = ps
-        .masm
-        .as_ref()
-        .expect("PathScorer_MASM_Mega m_MASM is null");
+    let masm = path_scorer_masm_mega_get_masm(ps);
     assert!(pos_a < masm.col_count);
     let score = -masm.cols[pos_a as usize].gap_close;
     assert!(score <= 0.0);
@@ -224,10 +242,7 @@ pub fn path_scorer_masm_mega_get_score_dd(
     pos_a: uint,
     _pos_b: uint,
 ) -> f32 {
-    let masm = ps
-        .masm
-        .as_ref()
-        .expect("PathScorer_MASM_Mega m_MASM is null");
+    let masm = path_scorer_masm_mega_get_masm(ps);
     assert!(pos_a < masm.col_count);
     let score = -masm.cols[pos_a as usize].gap_ext;
     assert!(score <= 0.0);
@@ -241,10 +256,7 @@ pub fn path_scorer_masm_mega_get_score_im(
     _pos_a: uint,
     _pos_b: uint,
 ) -> f32 {
-    let masm = ps
-        .masm
-        .as_ref()
-        .expect("PathScorer_MASM_Mega m_MASM is null");
+    let masm = path_scorer_masm_mega_get_masm(ps);
     assert!(masm.gap_open != f32::MAX);
     let score = -masm.gap_open / 2.0;
     assert!(score <= 0.0);
@@ -258,10 +270,7 @@ pub fn path_scorer_masm_mega_get_score_ii(
     _pos_a: uint,
     _pos_b: uint,
 ) -> f32 {
-    let masm = ps
-        .masm
-        .as_ref()
-        .expect("PathScorer_MASM_Mega m_MASM is null");
+    let masm = path_scorer_masm_mega_get_masm(ps);
     assert!(masm.gap_ext != f32::MAX);
     let score = -masm.gap_ext;
     assert!(score <= 0.0);

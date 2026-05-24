@@ -166,8 +166,10 @@ pub fn nw_small3(cm: &mut CacheMem3, prof_a: &Profile3, prof_b: &Profile3) -> (f
         iij += e;
         let mi = m_curr[jj - 1] + prof_b.pps[jj - 1].gap_open_score;
         if mi >= iij {
+            iij = mi;
             set_bit_tbi(&mut tb, i, u_length_b, b'M');
         }
+        let _terminal_iij = iij;
 
         let old_prev = m_prev;
         m_prev = m_curr;

@@ -126,19 +126,18 @@ where
         let _path02 = nw_small3(&mut cm, &prof0, &prof2);
         let _path12 = nw_small3(&mut cm, &prof1, &prof2);
 
-        out.push('\n');
-        out.push_str(&format!("Path01={path01}\n"));
-        out.push_str(&format!("Path02={path01}\n"));
-        out.push_str(&format!("Path12={path01}\n"));
+        let iter_log = format!("\nPath01={path01}\nPath02={path01}\nPath12={path01}\n");
+        log(&iter_log);
+        out.push_str(&iter_log);
     }
 
     let _ = refined_msa;
     out
 }
 
-/// Command implementation: load an MSA, build a guide tree, and run M3 refinement.
+/// Command implementation with injectable internals for focused helper tests.
 #[track_caller]
-pub fn cmd_m3refine<FRunUpgma, FSetParams, FRefine>(
+pub fn cmd_m3refine_with_hooks<FRunUpgma, FSetParams, FRefine>(
     input_file_name: &str,
     mut run_upgma: FRunUpgma,
     mut set_params: FSetParams,
@@ -185,4 +184,53 @@ where
     let mut refined_msa = MultiSequence::default();
     let log = refine(&msa, &ap, &seq_weights, &mut refined_msa);
     (msa, labels, seq_weights, t, ap, refined_msa, log)
+}
+
+/// Command implementation: load an MSA, build the C++ command guide tree, and run M3 refinement.
+#[track_caller]
+pub fn cmd_m3refine<FRefine>(
+    input_file_name: &str,
+    subst_mx_file_name: Option<&str>,
+    gap_open: Option<f32>,
+    center: Option<f32>,
+    blosum_pct: Option<uint>,
+    blosum_param_set: Option<uint>,
+    perturb_seed: Option<uint>,
+    linkage: Option<&str>,
+    kmer_dist: Option<&str>,
+    tree_iters: Option<uint>,
+    refine: FRefine,
+) -> (
+    MultiSequence,
+    Vec<String>,
+    Vec<f32>,
+    Tree,
+    M3AlnParams,
+    MultiSequence,
+    String,
+)
+where
+    FRefine: FnMut(&MultiSequence, &M3AlnParams, &[f32], &mut MultiSequence) -> String,
+{
+    cmd_m3refine_with_hooks(
+        input_file_name,
+        |u5, tree| upgma5_run_l75(u5, "biased", tree),
+        |ap| {
+            let _ = m3_aln_params_set_from_cmd_line(
+                ap,
+                false,
+                false,
+                subst_mx_file_name,
+                gap_open,
+                center,
+                blosum_pct,
+                blosum_param_set,
+                perturb_seed,
+                linkage,
+                kmer_dist,
+                tree_iters,
+            );
+        },
+        refine,
+    )
 }

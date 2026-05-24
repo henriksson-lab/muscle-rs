@@ -41,11 +41,19 @@ pub fn cmd_qscoredir(
     let mut n = 0_u32;
     let mut m = 0_u32;
     let mut out = String::new();
+    let mut avg_q = 0.0_f32;
+    let mut avg_tc = 0.0_f32;
 
-    for name in &names {
+    for (i, name) in names.iter().enumerate() {
+        let _ = progress_step(
+            i as uint,
+            name_count,
+            &format!("{test_dir}  Q {avg_q:.2} TC {avg_tc:.2}"),
+        );
         let test_file_name = format!("{test_dir}{name}");
         let ref_file_name = format!("{ref_dir}{name}");
         if !stdio_file_exists(&test_file_name) {
+            log(&warning(&format!("Not found {test_file_name}")));
             continue;
         }
         n += 1;
@@ -67,10 +75,12 @@ pub fn cmd_qscoredir(
 
         sum_q += qs.q;
         sum_tc += qs.tc;
+        avg_q = sum_q / n as f32;
+        avg_tc = sum_tc / n as f32;
     }
 
-    let mut avg_q = 0.0_f32;
-    let mut avg_tc = 0.0_f32;
+    avg_q = 0.0;
+    avg_tc = 0.0;
     if m > 0 {
         avg_q = sum_q / m as f32;
         avg_tc = sum_tc / m as f32;

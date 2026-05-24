@@ -5,7 +5,7 @@ use crate::*;
 /// Multiplies `*p` by a random factor in `[1-var, 1+var]`.
 #[track_caller]
 pub fn perturb(p: &mut f32, var: f32) {
-    assert!((0.0..1.0).contains(&var));
+    assert!((0.0..1.0).contains(&var) || var == 0.0);
     let pct = randu32() % 100;
     let fract = pct as f32 / 100.0;
     assert!((0.0..=1.0).contains(&fract));
@@ -26,25 +26,14 @@ pub fn hmm_params_perturb_probs(params: &mut HMMParams, seed: uint) {
     assert!(params.var > 0.0 && params.var < 1.0);
 
     for i in 0..params.trans.len() {
-        let pct = randu32() % 100;
-        let fract = pct as f32 / 100.0;
-        assert!((0.0..=1.0).contains(&fract));
-        let lo = 1.0 - params.var;
-        let hi = 1.0 + params.var;
-        let d = lo + (hi - lo) * fract;
-        params.trans[i] *= d;
+        perturb(&mut params.trans[i], params.var);
     }
 
     let alpha_size = params.alpha.len();
     for i in 0..alpha_size {
         for j in 0..=i {
-            let pct = randu32() % 100;
-            let fract = pct as f32 / 100.0;
-            assert!((0.0..=1.0).contains(&fract));
-            let lo = 1.0 - params.var;
-            let hi = 1.0 + params.var;
-            let d = lo + (hi - lo) * fract;
-            let p = params.emits[i][j] * d;
+            let mut p = params.emits[i][j];
+            perturb(&mut p, params.var);
             params.emits[i][j] = p;
             params.emits[j][i] = p;
         }

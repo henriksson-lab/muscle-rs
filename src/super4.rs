@@ -2,7 +2,7 @@
 #[allow(unused_imports)]
 use crate::*;
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Super4 {
     pub target_pair_count: uint,
     pub max_cluster_size: uint,
@@ -27,6 +27,35 @@ pub struct Super4 {
     pub final_msa_acb: MultiSequence,
     pub final_msa_bca: MultiSequence,
 } // original: Super4 (muscle/src/super4.h)
+
+impl Default for Super4 {
+    fn default() -> Self {
+        Self {
+            target_pair_count: 2000,
+            max_cluster_size: 500,
+            min_ea_pass1: 0.7,
+            min_ea_pass2: 0.9,
+            input_seqs: None,
+            ec: EACluster::default(),
+            cluster_mfas: Vec::new(),
+            cluster_labels: Vec::new(),
+            mpc: MPCFlat::default(),
+            cluster_msas: Vec::new(),
+            consensus_seqs: MultiSequence::default(),
+            dist_mx: Vec::new(),
+            pp: PProg::default(),
+            final_msa: MultiSequence::default(),
+            guide_tree_none: Tree::default(),
+            guide_tree_abc: Tree::default(),
+            guide_tree_acb: Tree::default(),
+            guide_tree_bca: Tree::default(),
+            final_msa_none: MultiSequence::default(),
+            final_msa_abc: MultiSequence::default(),
+            final_msa_acb: MultiSequence::default(),
+            final_msa_bca: MultiSequence::default(),
+        }
+    }
+}
 
 /// Reset the final MSA and all guide-tree permutation slots before a rerun.
 #[track_caller]

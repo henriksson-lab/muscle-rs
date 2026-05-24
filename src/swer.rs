@@ -416,7 +416,7 @@ pub fn s_wer_simple_masm_mega_sw(
 
     let mut enum_fwd_m = Vec::new();
     let mut path2 = String::new();
-    let (score2, enum_lo_a, enum_lo_b, enum_path) = sw_enum_dp_fwd_m(
+    let (score2, _enum_lo_a, _enum_lo_b, enum_path) = sw_enum_dp_fwd_m(
         ps.base.la,
         ps.base.lb,
         &mut enum_fwd_m,
@@ -450,8 +450,8 @@ pub fn s_wer_simple_masm_mega_sw(
     let score3 = sw_simple_fwd_m(
         ps.base.la,
         ps.base.lb,
-        &mut enum_lo_a.clone(),
-        &mut enum_lo_b.clone(),
+        lo_a,
+        lo_b,
         &mut path2,
         &mut simple_fwd_m,
         |pa, pb| path_scorer_masm_mega_get_match_score(&ps, pa, pb),
@@ -580,14 +580,13 @@ pub fn s_wer_ps_sw(
     let mut mem2 = XDPMem::default();
     let mut lo_a2 = uint::MAX;
     let mut lo_b2 = uint::MAX;
-    let mut path2 = String::new();
     let score2 = sw_simple2(
         &mut mem2,
         ps.base.la,
         ps.base.lb,
         &mut lo_a2,
         &mut lo_b2,
-        &mut path2,
+        path,
         |pa, pb| path_scorer_aa_blosum62_get_match_score(ps, pa, pb),
         |pa, pb| path_scorer_aa_blosum62_get_score_mm(ps, pa, pb),
         |pa, pb| path_scorer_aa_blosum62_get_score_md(ps, pa, pb),

@@ -175,6 +175,34 @@ pub fn cmd_sweep<FRunCase>(
 where
     FRunCase: FnMut(&M3AlnParams, &str, &MultiSequence, &MultiSequence, bool) -> (f64, f64),
 {
+    with_quiet(true, || {
+        cmd_sweep_quiet(
+            input_file_name,
+            ref_dir,
+            grid_spec,
+            fev_file_name,
+            blosum_pct,
+            subst_mx_file_name,
+            tree_iters,
+            &mut run_case,
+        )
+    })
+}
+
+#[track_caller]
+fn cmd_sweep_quiet<FRunCase>(
+    input_file_name: &str,
+    ref_dir: &str,
+    grid_spec: &str,
+    fev_file_name: &str,
+    blosum_pct: Option<uint>,
+    subst_mx_file_name: Option<&str>,
+    tree_iters: Option<uint>,
+    mut run_case: FRunCase,
+) -> (Sweeper, Bench, String, String)
+where
+    FRunCase: FnMut(&M3AlnParams, &str, &MultiSequence, &MultiSequence, bool) -> (f64, f64),
+{
     let (names, goods, los, his, sizes) = parse_grid_spec(grid_spec);
 
     let subst_mx_letter = if let Some(pct) = blosum_pct {
@@ -197,6 +225,9 @@ where
         ..Sweeper::default()
     };
     sweeper_set_param_names(&mut s, &names);
+    if !fev_file_name.is_empty() {
+        sweeper_set_fev(&mut s, fev_file_name);
+    }
 
     let mut top_score = 0.0_f64;
     let mut top_q = 0.0_f64;
@@ -248,8 +279,5 @@ where
     fev.push_str(&grid_fev);
     log.push_str(&sweeper_log_top(&s, 10));
 
-    if !fev_file_name.is_empty() {
-        std::fs::write(fev_file_name, &fev).expect("failed to write sweep FEV");
-    }
     (s, bench, log, fev)
 }

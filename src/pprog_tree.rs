@@ -14,9 +14,7 @@ pub fn cmd_pprog_tree<FAlignMSAsFlat>(
 where
     FAlignMSAsFlat: FnMut(&str, &MultiSequence, &MultiSequence, uint, &mut String) -> f32,
 {
-    let mut input_seqs = MultiSequence::default();
-    multi_sequence_load_mfa_l8(&mut input_seqs, input_file_name, true);
-    set_global_input_ms(&input_seqs);
+    let input_seqs = load_input(input_file_name, false);
     let is_nucleo = multi_sequence_guess_is_nucleo(&input_seqs);
 
     let seq_count = input_seqs.seqs.len() as uint;

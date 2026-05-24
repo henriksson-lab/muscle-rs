@@ -25,6 +25,7 @@ pub fn progress_log_input_summary(file_name: &str, seqs: &MultiSequence) -> Stri
     out.push_str(&format!("MinL   {min_l}\n"));
     out.push_str(&format!("MaxL   {max_l}\n"));
     out.push('\n');
+    let _ = progress_log(&out);
     out
 }
 
@@ -39,5 +40,6 @@ pub fn progress_log_msa_summary(s: &str, msa: &MultiSequence) -> String {
     out.push_str(&format!("Seqs   {seq_count}\n"));
     out.push_str(&format!("Cols   {col_count}\n"));
     out.push('\n');
+    let _ = progress_log(&out);
     out
 }

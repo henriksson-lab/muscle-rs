@@ -390,7 +390,10 @@ pub fn set_before_after_p_fs(aln: &MultiSequence) -> f64 {
         *after_count_map.entry(after.clone()).or_insert(0) += 1;
     }
     let before_top_count = before_count_map.values().copied().max().unwrap_or(0);
-    let after_top_count = after_count_map.values().copied().max().unwrap_or(0);
+    // C++ cmd_newbench_selectpfams.cpp accidentally reuses the before-PF
+    // count map when deriving AfterTopCount; preserve the reported score.
+    let after_top_count = before_count_map.values().copied().max().unwrap_or(0);
+    let _ = after_count_map;
     before_top_count as f64 * after_top_count as f64 / (seq_count * seq_count) as f64
 }
 
@@ -794,16 +797,33 @@ pub fn cmd_newbench_selectpfams(
     pfam_regions_tsv_file_name: &str,
     output_file_name: &str,
 ) -> String {
+    *NEWBENCH_SELECT_PFAMS_STATE.lock().unwrap() = NewbenchSelectPfamsState::default();
     read_pfam_regions(pfam_regions_tsv_file_name);
     let up_count = NEWBENCH_SELECT_PFAMS_STATE.lock().unwrap().unique_ups.len() as uint;
     let mut out = String::new();
+    let mut selected_count = 0;
     for upix in 0..up_count {
         if let Some(row) = select_up(upix) {
             out.push_str(&row);
+            selected_count += 1;
         }
+        let pct = 100.0 * selected_count as f64 / (upix + 1) as f64;
+        let _ = progress_step(
+            upix,
+            up_count,
+            &format!("{selected_count} selected ({pct:.1}%)"),
+        );
     }
     if !output_file_name.is_empty() {
         std::fs::write(output_file_name, &out).expect("failed to write selected PFAM rows");
     }
+    let pct = if up_count == 0 {
+        0.0
+    } else {
+        100.0 * selected_count as f64 / up_count as f64
+    };
+    let _ = progress_log(&format!(
+        "{selected_count} / {up_count} selected ({pct:.1}%)"
+    ));
     out
 }

@@ -25,6 +25,7 @@ pub fn mega_calc_bwd_flat_mega(profile_x: &[Vec<byte>], profile_y: &[Vec<byte>],
     let t_im = trans_score[HMMSTATE_IX as usize][HMMSTATE_M as usize];
     let t_jj = trans_score[HMMSTATE_JX as usize][HMMSTATE_JX as usize];
     let t_jm = trans_score[HMMSTATE_JX as usize][HMMSTATE_M as usize];
+    let scoring = mega_get_scoring_snapshot();
 
     let i_lx = lx as isize;
     let i_ly = ly as isize;
@@ -55,7 +56,7 @@ pub fn mega_calc_bwd_flat_mega(profile_x: &[Vec<byte>], profile_y: &[Vec<byte>],
         let emit_x = if i == i_lx {
             0.0
         } else {
-            mega_get_ins_score(profile_x, i as uint)
+            mega_scoring_get_ins_score(&scoring, profile_x, i as uint)
         };
         for j in (0..=i_ly).rev() {
             if i == i_lx && j == i_ly {
@@ -75,12 +76,12 @@ pub fn mega_calc_bwd_flat_mega(profile_x: &[Vec<byte>], profile_y: &[Vec<byte>],
             let emit_y = if j == i_ly {
                 0.0
             } else {
-                mega_get_ins_score(profile_y, j as uint)
+                mega_scoring_get_ins_score(&scoring, profile_y, j as uint)
             };
             let emit_xy = if i == i_lx || j == i_ly {
                 0.0
             } else {
-                mega_get_match_score(profile_x, i as uint, profile_y, j as uint)
+                mega_scoring_get_match_score(&scoring, profile_x, i as uint, profile_y, j as uint)
             };
             let b = base_i_j as usize;
 

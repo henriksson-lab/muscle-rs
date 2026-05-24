@@ -187,11 +187,8 @@ where
     let shrub_count = s7.shrub_lcas.len() as uint;
     let mut out = String::new();
     for shrub_index in 0..shrub_count {
-        out.push_str(&format!(
-            "Aligning shrub {} / {}\n",
-            shrub_index + 1,
-            shrub_count
-        ));
+        let msg = format!("Aligning shrub {} / {}\n", shrub_index + 1, shrub_count);
+        out.push_str(&progress_log(&msg));
         super7_intra_align_shrub(s7, shrub_index, |mpc, shrub_input| {
             run_mpc(mpc, shrub_input)
         });
@@ -257,6 +254,8 @@ where
     };
     let mut log = run_super7(&mut s7, &input_seqs, &guide_tree, shrub_size);
     multi_sequence_write_mfa(&s7.final_msa, output_file_name);
-    log.push_str("Done.\n");
+    let done_msg = "Done.\n";
+    let _ = progress_log(done_msg);
+    log.push_str(done_msg);
     (s7, guide_tree, log)
 }

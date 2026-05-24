@@ -26,6 +26,10 @@ pub static MAKE_SUBST_MX_STATE: std::sync::Mutex<MakeSubstMxState> =
         max_pct_id: 100,
     });
 
+pub static MAKE_SUBST_MX_LABEL_PAIR_TO_ROWS: std::sync::Mutex<
+    std::collections::BTreeMap<(String, String), (String, String)>,
+> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+
 /// Return a copy of `row_in` containing only uppercase letters and gap characters.
 pub fn delete_not_upper(row_in: &str) -> String {
     let mut row_out = String::new();
@@ -135,9 +139,14 @@ pub fn cmd_make_substmx(
     min_pct_id: Option<uint>,
     max_pct_id: Option<uint>,
 ) -> String {
-    if min_pct_id.is_some() {
-        assert!(max_pct_id.is_some());
-    }
+    let (min_pct_id, max_pct_id) = if let Some(min_pct_id) = min_pct_id {
+        (
+            min_pct_id,
+            max_pct_id.expect("max_pct_id is required when min_pct_id is set"),
+        )
+    } else {
+        (0, 100)
+    };
     {
         let mut state = MAKE_SUBST_MX_STATE.lock().unwrap();
         *state = MakeSubstMxState {
@@ -147,18 +156,26 @@ pub fn cmd_make_substmx(
             total_letters: 0,
             letter_pair_counts: vec![vec![0; 20]; 20],
             total_pairs: 0,
-            min_pct_id: min_pct_id.unwrap_or(0),
-            max_pct_id: max_pct_id.unwrap_or(100),
+            min_pct_id,
+            max_pct_id,
         };
         assert!(state.min_pct_id <= state.max_pct_id);
     }
 
     let mx_name = label.unwrap_or("MX");
     let msa_file_names = read_strings_from_file(input_file_name);
-    let mut label_pair_to_rows =
-        std::collections::BTreeMap::<(String, String), (String, String)>::new();
-    for file_name in msa_file_names {
-        let msa = msa_from_fasta_file_l95(&file_name);
+    {
+        let mut label_pair_to_rows = MAKE_SUBST_MX_LABEL_PAIR_TO_ROWS.lock().unwrap();
+        label_pair_to_rows.clear();
+    }
+    let msa_count = msa_file_names.len();
+    for (msa_index, file_name) in msa_file_names.iter().enumerate() {
+        let _ = progress_step(
+            msa_index as uint,
+            msa_count as uint,
+            &format!("Reading MSA {file_name}"),
+        );
+        let msa = msa_from_fasta_file_preserve_case(&file_name);
         let seq_count = msa.seqs.len();
         let col_count = multi_sequence_get_col_count(&msa) as usize;
         for i in 0..seq_count {
@@ -169,6 +186,7 @@ pub fn cmd_make_substmx(
                 let row_j = delete_not_upper(&msa_get_row_str(&msa, j as uint));
                 assert_eq!(row_i.len(), row_j.len());
                 let key = (label_i.clone(), label_j);
+                let mut label_pair_to_rows = MAKE_SUBST_MX_LABEL_PAIR_TO_ROWS.lock().unwrap();
                 if let Some((curr_row_i, _curr_row_j)) = label_pair_to_rows.get(&key) {
                     if curr_row_i.len() < col_count {
                         label_pair_to_rows.insert(key, (row_i.clone(), row_j));
@@ -180,9 +198,13 @@ pub fn cmd_make_substmx(
         }
     }
 
-    for (_label_pair, rows) in &label_pair_to_rows {
+    let label_pair_to_rows = MAKE_SUBST_MX_LABEL_PAIR_TO_ROWS.lock().unwrap();
+    let aln_count = label_pair_to_rows.len();
+    for (counter, (_label_pair, rows)) in label_pair_to_rows.iter().enumerate() {
+        let _ = progress_step(counter as uint, aln_count as uint, "Counting letters");
         add_rows(&rows.0, &rows.1);
     }
+    drop(label_pair_to_rows);
 
     let state = MAKE_SUBST_MX_STATE.lock().unwrap();
     assert!(state.total_letters > 0);
@@ -305,5 +327,6 @@ pub fn cmd_make_substmx(
         }
         std::fs::write(output_file_name, out).expect("failed to write substitution matrix");
     }
+    crate::log(&log);
     log
 }

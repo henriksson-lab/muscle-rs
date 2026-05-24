@@ -63,5 +63,6 @@ pub fn cmd_msaselfscore3(
         score_s,
         base_name(input_file_name)
     );
+    progress_log(&log);
     (prof, self_score, log)
 }

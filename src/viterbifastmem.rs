@@ -23,15 +23,32 @@ pub fn viterbi_fast_mem(
     assert!(a.len() >= la as usize);
     assert!(b.len() >= lb as usize);
 
-    mem.max_la = la;
-    mem.max_lb = lb;
-    mem.buffer1 = vec![MINUS_INFINITY; lb as usize + 1];
-    mem.buffer2 = vec![MINUS_INFINITY; lb as usize + 1];
-    mem.tb_bit = vec![vec![0; lb as usize + 1]; la as usize + 1];
+    let row_count = la as usize + 1;
+    let col_count = lb as usize + 1;
+    if mem.buffer1.len() < col_count {
+        mem.buffer1.resize(col_count, MINUS_INFINITY);
+    }
+    if mem.buffer2.len() < col_count {
+        mem.buffer2.resize(col_count, MINUS_INFINITY);
+    }
+    mem.buffer1[..col_count].fill(MINUS_INFINITY);
+    mem.buffer2[..col_count].fill(MINUS_INFINITY);
+    if mem.tb_bit.len() < row_count {
+        mem.tb_bit.resize_with(row_count, Vec::new);
+    }
+    for row in mem.tb_bit.iter_mut().take(row_count) {
+        if row.len() < col_count {
+            row.resize(col_count, 0);
+        }
+        row[..col_count].fill(0);
+    }
+    mem.max_la = mem.max_la.max(la);
+    mem.max_lb = mem.max_lb.max(lb);
     mem.tb_bit_row_count = la + 1;
     mem.tb_bit_col_count = lb + 1;
-    mem.tb_bit_allocated_row_count = la + 1;
-    mem.tb_bit_allocated_col_count = lb + 1;
+    mem.tb_bit_allocated_row_count = mem.tb_bit.len() as uint;
+    mem.tb_bit_allocated_col_count =
+        mem.tb_bit.iter().map(|row| row.len()).max().unwrap_or(0) as uint;
     path_info_alloc2(pi, la, lb);
 
     let mut open_a = -3.0_f32;

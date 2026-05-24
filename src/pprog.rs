@@ -2,7 +2,7 @@
 #[allow(unused_imports)]
 use crate::*;
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct PProg {
     pub input_msa_count: uint,
     pub join_count: uint,
@@ -19,6 +19,27 @@ pub struct PProg {
     pub join_msa_indexes1: Vec<uint>,
     pub join_msa_indexes2: Vec<uint>,
 } // original: PProg (muscle/src/pprog.h)
+
+impl Default for PProg {
+    fn default() -> Self {
+        Self {
+            input_msa_count: 0,
+            join_count: 0,
+            node_count: 0,
+            target_pair_count: 2000,
+            max_coarse_seqs: 500,
+            msa_label_to_index: std::collections::BTreeMap::new(),
+            msa_labels: Vec::new(),
+            msas: Vec::new(),
+            pending: Vec::new(),
+            score_mx: Vec::new(),
+            path_mx: Vec::new(),
+            join_index: 0,
+            join_msa_indexes1: Vec::new(),
+            join_msa_indexes2: Vec::new(),
+        }
+    }
+}
 
 /// Reads `file_name` as text and returns one entry per line.
 #[track_caller]
@@ -250,6 +271,11 @@ pub fn p_prog_load_ms_as(pp: &mut PProg, file_names: &[String]) -> bool {
     let mut global_input = MultiSequence::default();
     for msa_index in 0..pp.input_msa_count {
         let file_name = &file_names[msa_index as usize];
+        let _ = progress_step(
+            msa_index,
+            pp.input_msa_count,
+            &format!("Reading {file_name}"),
+        );
         let mut msa = MultiSequence::default();
         multi_sequence_load_mfa_l8(&mut msa, file_name, false);
         let is_nuc = multi_sequence_guess_is_nucleo(&msa);
@@ -280,6 +306,20 @@ pub fn p_prog_run<FAlignMSAsFlat>(pp: &mut PProg, mut align_msas_flat: FAlignMSA
 where
     FAlignMSAsFlat: FnMut(&str, &MultiSequence, &MultiSequence, uint, &mut String) -> f32,
 {
+    p_prog_run_with_savedir(pp, None, |label, msa1, msa2, pair_count, path| {
+        align_msas_flat(label, msa1, msa2, pair_count, path)
+    });
+}
+
+/// Runs the progressive join, optionally dumping each joined MSA like C++ `-savedir`.
+#[track_caller]
+pub fn p_prog_run_with_savedir<FAlignMSAsFlat>(
+    pp: &mut PProg,
+    savedir: Option<&str>,
+    mut align_msas_flat: FAlignMSAsFlat,
+) where
+    FAlignMSAsFlat: FnMut(&str, &MultiSequence, &MultiSequence, uint, &mut String) -> f32,
+{
     pp.join_msa_indexes1.clear();
     pp.join_msa_indexes2.clear();
     pp.score_mx.clear();
@@ -298,9 +338,16 @@ where
 
     pp.join_index = 0;
     while pp.join_index < pp.join_count {
+        let _ = progress_log("____________________________________________\n");
+        let _ = progress_log(&format!(
+            "Join {}/{}, pending {}\n",
+            pp.join_index + 1,
+            pp.join_count,
+            pp.pending.len()
+        ));
         let (index1, index2) = p_prog_find_best_pair(pp);
         assert_ne!(index1, index2);
-        p_prog_join_by_precomputed_path(pp, index1, index2);
+        p_prog_join_by_precomputed_path_with_savedir(pp, index1, index2, savedir);
         p_prog_align_new_to_pending(pp, |label, msa1, msa2, target_pair_count, path| {
             align_msas_flat(label, msa1, msa2, target_pair_count, path)
         });
@@ -316,14 +363,25 @@ pub fn p_prog_align_all_input_pairs<FAlignMSAsFlat>(
 ) where
     FAlignMSAsFlat: FnMut(&str, &MultiSequence, &MultiSequence, uint, &mut String) -> f32,
 {
-    let _pair_count = (pp.input_msa_count * (pp.input_msa_count - 1)) / 2;
+    let pair_count = (pp.input_msa_count * (pp.input_msa_count - 1)) / 2;
     pp.score_mx = vec![vec![0.0; pp.node_count as usize]; pp.node_count as usize];
     pp.path_mx = vec![vec![String::new(); pp.node_count as usize]; pp.node_count as usize];
 
+    let mut pair_index = 0;
     for msa_index1 in 0..pp.input_msa_count {
         let msa_label1 = p_prog_get_msa_label(pp, msa_index1).to_string();
         let msa1 = p_prog_get_msa(pp, msa_index1).clone();
         for msa_index2 in msa_index1 + 1..pp.input_msa_count {
+            pair_index += 1;
+            let pct = if pair_count == 0 {
+                0.0
+            } else {
+                100.0 * pair_index as f32 / pair_count as f32
+            };
+            let _ = progress(&format!(
+                "Input pair {} / {} ({:.1}%)\n",
+                pair_index, pair_count, pct
+            ));
             let msa_label2 = p_prog_get_msa_label(pp, msa_index2).to_string();
             let msa2 = p_prog_get_msa(pp, msa_index2).clone();
             let mut path = String::new();
@@ -367,12 +425,26 @@ pub fn p_prog_log_pending(pp: &PProg, s: &str) -> String {
             p_prog_get_msa_label(pp, index)
         ));
     }
+    log(&out);
     out
 }
 
 /// Joins MSAs `index1` and `index2` using the precomputed path, appending a new join slot.
 #[track_caller]
 pub fn p_prog_join_by_precomputed_path(pp: &mut PProg, index1: uint, index2: uint) {
+    p_prog_join_by_precomputed_path_with_savedir(pp, index1, index2, None);
+}
+
+/// Joins MSAs and optionally writes `savedir/join{join_index}` before advancing state.
+#[track_caller]
+pub fn p_prog_join_by_precomputed_path_with_savedir(
+    pp: &mut PProg,
+    index1: uint,
+    index2: uint,
+    savedir: Option<&str>,
+) {
+    let _pending_start = p_prog_log_pending(pp, "Join start");
+
     assert_eq!(pp.join_msa_indexes1.len() as uint, pp.join_index);
     assert_eq!(pp.join_msa_indexes2.len() as uint, pp.join_index);
     pp.join_msa_indexes1.push(index1);
@@ -380,6 +452,8 @@ pub fn p_prog_join_by_precomputed_path(pp: &mut PProg, index1: uint, index2: uin
 
     let new_msa_index = pp.input_msa_count + pp.join_index;
     let new_msa_label = format!("Join{}", pp.join_index + 1);
+    let msa_label1 = pp.msa_labels[index1 as usize].clone();
+    let msa_label2 = pp.msa_labels[index2 as usize].clone();
 
     let msa1 = p_prog_get_msa(pp, index1).clone();
     let msa2 = p_prog_get_msa(pp, index2).clone();
@@ -387,8 +461,26 @@ pub fn p_prog_join_by_precomputed_path(pp: &mut PProg, index1: uint, index2: uin
     let mut msa12 = MultiSequence::default();
     align_ms_as_by_path(&msa1, &msa2, &path, &mut msa12);
 
+    let _ = progress_log(&format!(
+        "Join {}/{} best pair {}, {}\n",
+        pp.join_index + 1,
+        pp.join_count,
+        index1,
+        index2
+    ));
+    log(&format!("  Join_{}.X={}\n", pp.join_index + 1, msa_label1));
+    log(&format!("  Join_{}.Y={}\n", pp.join_index + 1, msa_label2));
+
     p_prog_set_msa(pp, new_msa_index, &msa12);
     p_prog_set_msa_label(pp, new_msa_index, &new_msa_label);
+
+    if let Some(savedir) = savedir {
+        let mut prefix = savedir.to_string();
+        dirize(&mut prefix);
+        let join_file_name = format!("{prefix}join{}", pp.join_index);
+        let _ = progress_log(&format!("Writing join MSA: {join_file_name}\n"));
+        multi_sequence_write_mfa(&msa12, &join_file_name);
+    }
 
     let _joined_seq_count = msa12.seqs.len() as uint;
     let _joined_col_count = multi_sequence_get_col_count(&msa12);
@@ -398,6 +490,8 @@ pub fn p_prog_join_by_precomputed_path(pp: &mut PProg, index1: uint, index2: uin
     p_prog_delete_indexes_from_pending(pp, index1, index2);
     let pending_count_after_join = pp.pending.len();
     assert_eq!(pending_count_after_join + 2, pending_count_before_join);
+
+    let _pending_end = p_prog_log_pending(pp, "Join end");
 }
 
 /// Aligns the most recently joined MSA against each remaining pending MSA.
@@ -409,12 +503,21 @@ pub fn p_prog_align_new_to_pending<FAlignMSAsFlat>(
     FAlignMSAsFlat: FnMut(&str, &MultiSequence, &MultiSequence, uint, &mut String) -> f32,
 {
     let pending_count = pp.pending.len();
+    let _pending_log = p_prog_log_pending(pp, "AlignNewToPending");
+
     assert!(pending_count > 0);
     let new_index = pp.pending[pending_count - 1];
 
     let new_msa_label = pp.msa_labels[new_index as usize].clone();
     let new_msa = p_prog_get_msa(pp, new_index).clone();
     for i in 0..pending_count - 1 {
+        let _ = progress_log(&format!(
+            "Join {}/{} new vs. pending {}/{}\n\n",
+            pp.join_index + 1,
+            pp.join_count,
+            i + 1,
+            pending_count
+        ));
         let index = pp.pending[i];
         let msa = p_prog_get_msa(pp, index).clone();
         let msa_labeli = pp.msa_labels[i].clone();
@@ -463,6 +566,7 @@ pub fn cmd_pprog<FAlignMSAsFlat>(
     list_file_name: &str,
     output_file_name: &str,
     guide_tree_output_file_name: Option<&str>,
+    savedir: Option<&str>,
     target_pair_count: Option<uint>,
     mut align_msas_flat: FAlignMSAsFlat,
 ) -> (PProg, Option<Tree>)
@@ -493,7 +597,7 @@ where
         ALPHA::ALPHA_Amino
     });
     init_probcons();
-    p_prog_run(&mut pp, |label, msa1, msa2, pair_count, path| {
+    p_prog_run_with_savedir(&mut pp, savedir, |label, msa1, msa2, pair_count, path| {
         align_msas_flat(label, msa1, msa2, pair_count, path)
     });
 

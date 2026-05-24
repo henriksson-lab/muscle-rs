@@ -20,7 +20,7 @@ where
     assert_eq!(param_values.len() as uint, s.param_count);
     let mut gap_open = f32::MAX;
     let mut center = f32::MAX;
-    let mut out = String::new();
+    let mut out = format!("{}  ", get_progress_prefix_c_str());
     let format_g4 = |d: f32| -> String {
         if d == 0.0 {
             return "0".to_string();
@@ -143,6 +143,46 @@ pub fn cmd_spatter<FRunCase>(
 where
     FRunCase: FnMut(&M3AlnParams, &str, &MultiSequence, &MultiSequence, bool) -> (f64, f64),
 {
+    with_quiet(true, || {
+        cmd_spatter_quiet(
+            input_file_name,
+            ref_dir,
+            warmup_pct,
+            grid_spec,
+            spatter_spec,
+            output1_file_name,
+            fev_file_name,
+            blosum_pct,
+            subst_mx_file_name,
+            max_iters,
+            max_fail_iters,
+            tries_per_iter,
+            shrink,
+            &mut run_case,
+        )
+    })
+}
+
+#[track_caller]
+fn cmd_spatter_quiet<FRunCase>(
+    input_file_name: &str,
+    ref_dir: &str,
+    warmup_pct: uint,
+    grid_spec: &str,
+    spatter_spec: &str,
+    output1_file_name: &str,
+    fev_file_name: &str,
+    blosum_pct: Option<uint>,
+    subst_mx_file_name: Option<&str>,
+    max_iters: uint,
+    max_fail_iters: uint,
+    tries_per_iter: uint,
+    shrink: f32,
+    mut run_case: FRunCase,
+) -> (Sweeper, Sweeper, Bench, Bench, String, String, String)
+where
+    FRunCase: FnMut(&M3AlnParams, &str, &MultiSequence, &MultiSequence, bool) -> (f64, f64),
+{
     let mut ref_dir = ref_dir.to_string();
     dirize(&mut ref_dir);
     let mut bench = Bench::default();
@@ -201,6 +241,9 @@ where
         ..Sweeper::default()
     };
     sweeper_set_param_names(&mut s1, &names);
+    if !output1_file_name.is_empty() {
+        sweeper_set_fev(&mut s1, output1_file_name);
+    }
     if !goods.is_empty() {
         let (q, tc, score_log) = sweeper_get_score_l20(
             &s1,
@@ -259,6 +302,9 @@ where
         ..Sweeper::default()
     };
     sweeper_set_param_names(&mut s2, &names);
+    if !fev_file_name.is_empty() {
+        sweeper_set_fev(&mut s2, fev_file_name);
+    }
     let fev = {
         let bench_ptr = &mut bench;
         let run_case_ref = &mut run_case;
@@ -292,11 +338,5 @@ where
     };
     log.push_str(&sweeper_log_top(&s2, 10));
 
-    if !output1_file_name.is_empty() {
-        std::fs::write(output1_file_name, &output1_fev).expect("failed to write spatter output1");
-    }
-    if !fev_file_name.is_empty() {
-        std::fs::write(fev_file_name, &fev).expect("failed to write spatter FEV");
-    }
     (s1, s2, bench, warmup_bench, log, output1_fev, fev)
 }

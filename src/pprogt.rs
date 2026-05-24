@@ -39,10 +39,7 @@ pub fn cmd_pprogt<FAlignMSAsFlat>(
 where
     FAlignMSAsFlat: FnMut(&str, &MultiSequence, &MultiSequence, uint, &mut String) -> f32,
 {
-    let msa_file_names = read_strings_from_file(list_file_name)
-        .into_iter()
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>();
+    let msa_file_names = read_strings_from_file(list_file_name);
     assert!(msa_file_names.len() > 1);
 
     let mut pp = PProg {

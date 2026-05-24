@@ -14,11 +14,12 @@ pub struct GTBNode {
 
 pub(crate) static GTB_NODE_DP_MEMS: std::sync::Mutex<Vec<XDPMem>> =
     std::sync::Mutex::new(Vec::new());
+thread_local! {
+    static GTB_NODE_THREAD_DP_MEM: std::cell::RefCell<XDPMem> =
+        std::cell::RefCell::new(XDPMem::default());
+}
 
-/// Returns the per-thread DP scratch buffer, lazily allocating one slot per requested thread.
-#[track_caller]
-pub fn get_dp_mem_l18() -> XDPMem {
-    let mut mems = GTB_NODE_DP_MEMS.lock().unwrap();
+fn gtb_node_ensure_dp_mems(mems: &mut Vec<XDPMem>) {
     if mems.is_empty() {
         let n = get_requested_thread_count();
         assert!(n > 0);
@@ -26,9 +27,25 @@ pub fn get_dp_mem_l18() -> XDPMem {
             mems.push(XDPMem::default());
         }
     }
+}
+
+/// Returns the per-thread DP scratch buffer, lazily allocating one slot per requested thread.
+#[track_caller]
+pub fn get_dp_mem_l18() -> XDPMem {
+    let mut mems = GTB_NODE_DP_MEMS.lock().unwrap();
+    gtb_node_ensure_dp_mems(&mut mems);
     let thread_index = get_thread_index();
     assert!(thread_index < mems.len() as uint);
     mems[thread_index as usize].clone()
+}
+
+/// Run `f` with the per-thread GTB DP scratch memory used by C++ `GetDPMem`.
+#[track_caller]
+pub fn with_dp_mem_l18<R, F>(f: F) -> R
+where
+    F: FnOnce(&mut XDPMem) -> R,
+{
+    GTB_NODE_THREAD_DP_MEM.with(|mem| f(&mut mem.borrow_mut()))
 }
 
 /// Returns the label for the node's underlying sequence at the given index.

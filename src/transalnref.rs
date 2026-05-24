@@ -76,7 +76,15 @@ where
     } else {
         100.0 * f64::from(ids) / f64::from(pair_col_count)
     };
-    let log = format!("ref {ref_label}, add {add_label} ({pct_id:.1}% id)\nDone.\n");
+    log(&write_aln_pretty(
+        r_str.as_bytes(),
+        a_str.as_bytes(),
+        &path_str,
+    ));
+    let mut log_text = String::new();
+    let ref_msg = format!("ref {ref_label}, add {add_label} ({pct_id:.1}% id)\n");
+    let _ = progress_log(&ref_msg);
+    log_text.push_str(&ref_msg);
 
     let mut path_str_xyb = String::new();
     for c in path_str.bytes() {
@@ -105,5 +113,8 @@ where
         .expect("TransAlnRef extended MSA not built")
         .clone();
     multi_sequence_write_mfa(&extended_msa, output_file_name);
-    (ta, extended_msa, log)
+    let done_msg = "Done.\n";
+    let _ = progress_log(done_msg);
+    log_text.push_str(done_msg);
+    (ta, extended_msa, log_text)
 }

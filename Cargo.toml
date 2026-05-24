@@ -9,7 +9,13 @@ tracehash = { package = "tracehash-rs", version = "0.2.0", optional = true }
 
 [features]
 default = []
+cli-bin = []
 tracehash = ["dep:tracehash"]
+
+[[bin]]
+name = "muscle_rs"
+path = "src/main.rs"
+required-features = ["cli-bin"]
 
 [profile.release]
 # Whole-program LTO and a single codegen unit let LLVM inline across the
@@ -18,4 +24,3 @@ tracehash = ["dep:tracehash"]
 # wall-clock at the cost of slower builds.
 lto = "fat"
 codegen-units = 1
-panic = "abort"

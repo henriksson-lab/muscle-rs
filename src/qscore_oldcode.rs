@@ -7,10 +7,24 @@ use crate::*;
 /// `(Q, TC, log)`.
 #[track_caller]
 pub fn cmd_qscore_oldcode(test_file_name: &str, ref_file_name: &str) -> (f64, f64, String) {
+    cmd_qscore_oldcode_with_options(test_file_name, ref_file_name, false)
+}
+
+#[track_caller]
+pub fn cmd_qscore_oldcode_with_options(
+    test_file_name: &str,
+    ref_file_name: &str,
+    verbose: bool,
+) -> (f64, f64, String) {
     let mut msa_test = MultiSequence::default();
     let mut msa_ref = MultiSequence::default();
     multi_sequence_load_mfa_l8(&mut msa_test, test_file_name, false);
     multi_sequence_load_mfa_l8(&mut msa_ref, ref_file_name, false);
+    for seq in &mut msa_test.seqs {
+        for c in &mut seq.char_vec {
+            *c = c.to_ascii_uppercase();
+        }
+    }
     assert!(multi_sequence_is_aligned(&msa_test));
     assert!(multi_sequence_is_aligned(&msa_ref));
 
@@ -39,6 +53,14 @@ pub fn cmd_qscore_oldcode(test_file_name: &str, ref_file_name: &str) -> (f64, f6
     if found_count == 0 {
         die("No reference labels found in test MSA");
     }
+    let mut diagnostics = String::new();
+    if found_count > ref_seq_count {
+        let warning_text = warning(&format!(
+            "{} reference sequences not found in test MSA",
+            ref_seq_count - found_count
+        ));
+        diagnostics.push_str(&warning_text);
+    }
 
     let mut test_col_index = vec![0; test_seq_count as usize];
     let mut test_col_index_count = vec![0; test_col_count as usize + 1];
@@ -48,6 +70,13 @@ pub fn cmd_qscore_oldcode(test_file_name: &str, ref_file_name: &str) -> (f64, f6
     let mut seq_diff_count = 0;
     let mut correct_pair_count: uint64 = 0;
     let mut ref_aligned_pair_count: uint64 = 0;
+    let mut verbose_log = String::new();
+    if verbose {
+        verbose_log.push_str("RefCol  RefAln  NonGapped  TestAll  CorrCols  Ref\n");
+        verbose_log.push_str("------  ------  ---------  -------  --------  ---\n");
+        verbose_log.push_str("RefCol  RefAln  NonGapped  TestAll  CorrCols  Ref\n");
+        verbose_log.push_str("------  ------  ---------  -------  --------  ---\n");
+    }
 
     for ref_col_index in 0..ref_col_count {
         test_col_indexes.clear();
@@ -79,6 +108,11 @@ pub fn cmd_qscore_oldcode(test_file_name: &str, ref_file_name: &str) -> (f64, f6
             }
             if !c_ref.eq_ignore_ascii_case(&c_test) {
                 seq_diff_count += 1;
+                diagnostics.push_str(&warning(&format!(
+                    "Test seq {test_seq_index} ({}) differs from ref seq {ref_seq_index} ({}), ref col {ref_col_index}={c_ref}, test={c_test}",
+                    msa_test.seqs[test_seq_index as usize].label,
+                    msa_ref.seqs[ref_seq_index as usize].label
+                )));
             }
             if c_ref.is_ascii_alphabetic() && (c_ref.is_ascii_uppercase() || c_ref == 'x') {
                 ref_col_is_aligned = true;
@@ -117,6 +151,22 @@ pub fn cmd_qscore_oldcode(test_file_name: &str, ref_file_name: &str) -> (f64, f6
         }
         correct_pair_count += col_pair_count as uint64;
         ref_aligned_pair_count += (non_gapped_count * (non_gapped_count - 1) / 2) as uint64;
+        if verbose {
+            verbose_log.push_str(&format!(
+                "{ref_col_index:6}  {:6}  {non_gapped_count:9}  {:7}  {correct_col_count:8}  ",
+                if ref_col_is_aligned { 'T' } else { 'F' },
+                if test_col_all_correct { 'T' } else { 'F' }
+            ));
+            for ref_seq_index in 0..ref_seq_count {
+                let test_seq_index = ref_to_test_seq_index[ref_seq_index as usize];
+                if test_seq_index == uint::MAX {
+                    continue;
+                }
+                let c_ref = msa_ref.seqs[ref_seq_index as usize].char_vec[ref_col_index as usize];
+                verbose_log.push(c_ref);
+            }
+            verbose_log.push('\n');
+        }
     }
 
     let q = if ref_aligned_pair_count == 0 {
@@ -125,11 +175,31 @@ pub fn cmd_qscore_oldcode(test_file_name: &str, ref_file_name: &str) -> (f64, f6
         correct_pair_count as f64 / ref_aligned_pair_count as f64
     };
     let tc = if ref_aligned_col_count == 0 {
+        diagnostics.push_str(&warning(&format!(
+            "reference alignment {ref_file_name} has no aligned (upper-case) columns\n"
+        )));
         0.0
     } else {
         correct_col_count as f64 / ref_aligned_col_count as f64
     };
-    let _ = seq_diff_count;
+    if verbose {
+        verbose_log.push_str("        ------                      --------\n");
+        verbose_log.push_str(&format!(
+            "{:6.6}  {ref_aligned_col_count:6}  {:9.9}  {:7.7}  {correct_col_count:8}\n",
+            "", "", ""
+        ));
+        verbose_log.push('\n');
+        verbose_log.push_str(&format!("CorrectPairCount     {correct_pair_count}\n"));
+        verbose_log.push_str(&format!("RefAlignedPairCount  {ref_aligned_pair_count}\n"));
+        verbose_log.push_str(&format!("CorrectColCount      {correct_col_count}\n"));
+        verbose_log.push_str(&format!("RefAlignedColCount   {ref_aligned_col_count}\n"));
+        verbose_log.push_str(&format!("Q                    {q:.4}\n"));
+        verbose_log.push_str(&format!("TC                   {tc:.4}\n"));
+        log(&verbose_log);
+    }
+    if seq_diff_count > 0 {
+        diagnostics.push_str(&warning(&format!("{seq_diff_count} seq diffs ignored")));
+    }
     let format_g3 = |d: f64| -> String {
         if d == 0.0 {
             return "0".to_string();
@@ -163,10 +233,14 @@ pub fn cmd_qscore_oldcode(test_file_name: &str, ref_file_name: &str) -> (f64, f6
         }
         s
     };
-    let log = format!(
+    let final_log = format!(
         "{test_file_name} Q={}, TC={}\n",
         format_g3(q),
         format_g3(tc)
     );
-    (q, tc, log)
+    if !diagnostics.is_empty() {
+        log(&diagnostics);
+    }
+    let _ = progress_log(&final_log);
+    (q, tc, format!("{diagnostics}{verbose_log}{final_log}"))
 }

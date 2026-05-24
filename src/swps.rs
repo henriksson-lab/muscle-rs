@@ -90,12 +90,12 @@ where
 
             let md = prev_saved_m + get_score_md(i, j);
             let dd = mem.buffer2[j as usize] + get_score_dd(i, j);
-            if md >= dd {
-                mem.buffer2[j as usize] = md;
+            let mut d = md;
+            if dd > d {
+                d = md;
                 trace_bits |= TRACEBITS_MD;
-            } else {
-                mem.buffer2[j as usize] = dd;
             }
+            mem.buffer2[j as usize] = d;
 
             let mi = prev_saved_m + get_score_mi(i, j);
             let ii = iscore + get_score_ii(i, j);

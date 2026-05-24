@@ -47,8 +47,11 @@ pub fn p_prog3_run<FNwSmall3, FAlignTwoProfsGivenPath>(
     pp.node_to_path = vec![String::new(); node_count as usize];
 
     let mut weights1 = vec![f32::MAX; 1];
+    let mut done_node_count = 0;
     let mut node = tree_first_depth_first_node(guide_tree);
     loop {
+        let _ = progress_step(done_node_count, node_count, "Progressive align");
+        done_node_count += 1;
         pp.node_to_profile[node as usize] = None;
         let i = node as usize;
         let is_leaf = guide_tree.node_count == 1
@@ -123,6 +126,7 @@ pub fn p_prog3_build_msa(pp: &mut PProg3) {
     multi_sequence_clear(&mut pp.msa);
 
     for node in 0..node_count {
+        let _ = progress_step(node, node_count, "Root MSA");
         let i = node as usize;
         let is_leaf = guide_tree.node_count == 1
             || (guide_tree.neighbor2[i] == NULL_NEIGHBOR

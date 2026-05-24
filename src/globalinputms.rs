@@ -22,10 +22,16 @@ pub(crate) static GLOBAL_INPUT_STATE: std::sync::Mutex<GlobalInputState> =
         label_to_seq: std::collections::BTreeMap::new(),
     });
 
+pub(crate) fn global_input_state_lock() -> std::sync::MutexGuard<'static, GlobalInputState> {
+    GLOBAL_INPUT_STATE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Returns the global sequence index for `label`, panicking if the label is unknown.
 #[track_caller]
 pub fn get_gsi_by_label(label: &str) -> uint {
-    let state = GLOBAL_INPUT_STATE.lock().unwrap();
+    let state = global_input_state_lock();
     *state
         .label_to_idx
         .get(label)
@@ -35,7 +41,7 @@ pub fn get_gsi_by_label(label: &str) -> uint {
 /// Returns the FASTA label for the global sequence at index `gsi`.
 #[track_caller]
 pub fn get_label_by_gsi(gsi: uint) -> String {
-    let state = GLOBAL_INPUT_STATE.lock().unwrap();
+    let state = global_input_state_lock();
     let ms = state.ms.as_ref().expect("GetLabelByGSI, global MS not set");
     ms.seqs[gsi as usize].label.clone()
 }
@@ -43,7 +49,7 @@ pub fn get_label_by_gsi(gsi: uint) -> String {
 /// Returns the length of the global sequence at index `gsi`.
 #[track_caller]
 pub fn get_seq_length_by_gsi(gsi: uint) -> uint {
-    let state = GLOBAL_INPUT_STATE.lock().unwrap();
+    let state = global_input_state_lock();
     let ms = state
         .ms
         .as_ref()
@@ -68,7 +74,7 @@ pub fn get_sequence_by_global_label(label: &str) -> Sequence {
 /// Returns a clone of the global `Sequence` at index `gsi`.
 #[track_caller]
 pub fn get_sequence_by_gsi(gsi: uint) -> Sequence {
-    let state = GLOBAL_INPUT_STATE.lock().unwrap();
+    let state = global_input_state_lock();
     let ms = state
         .ms
         .as_ref()
@@ -86,14 +92,14 @@ pub fn get_byte_seq_by_gsi(gsi: uint) -> Vec<byte> {
 /// Inserts a temporary sequence into the global label->sequence map.
 #[track_caller]
 pub fn add_global_tmp_seq(seq: &Sequence) {
-    let mut state = GLOBAL_INPUT_STATE.lock().unwrap();
+    let mut state = global_input_state_lock();
     state.label_to_seq.insert(seq.label.clone(), seq.clone());
 }
 
 /// Installs `ms` as the global input MS and rebuilds the label/index/length caches.
 #[track_caller]
 pub fn set_global_input_ms(ms: &MultiSequence) {
-    let mut state = GLOBAL_INPUT_STATE.lock().unwrap();
+    let mut state = global_input_state_lock();
     state.ms = Some(ms.clone());
     state.seq_count = ms.seqs.len() as uint;
     state.mean_seq_length = 0.0;
@@ -121,9 +127,7 @@ pub fn set_global_input_ms(ms: &MultiSequence) {
 /// Returns a clone of the currently installed global input MS.
 #[track_caller]
 pub fn get_global_input_ms() -> MultiSequence {
-    GLOBAL_INPUT_STATE
-        .lock()
-        .unwrap()
+    global_input_state_lock()
         .ms
         .clone()
         .expect("GetGlobalInputMS, global MS not set")
@@ -132,13 +136,13 @@ pub fn get_global_input_ms() -> MultiSequence {
 /// Returns the number of sequences in the global input MS.
 #[track_caller]
 pub fn get_global_ms_seq_count() -> uint {
-    GLOBAL_INPUT_STATE.lock().unwrap().seq_count
+    global_input_state_lock().seq_count
 }
 
 /// Returns the mean sequence length cached for the global input MS.
 #[track_caller]
 pub fn get_global_ms_mean_seq_length() -> f64 {
-    GLOBAL_INPUT_STATE.lock().unwrap().mean_seq_length
+    global_input_state_lock().mean_seq_length
 }
 
 /// Returns the number of global sequence indexes (alias for global MS seq count).
@@ -150,7 +154,7 @@ pub fn get_gsi_count() -> uint {
 /// Returns a clone of the global input `Sequence` at the given index `gsi`.
 #[track_caller]
 pub fn get_global_input_seq_by_index(gsi: uint) -> Sequence {
-    let state = GLOBAL_INPUT_STATE.lock().unwrap();
+    let state = global_input_state_lock();
     assert!(gsi < state.seq_count);
     let ms = state
         .ms
@@ -162,7 +166,7 @@ pub fn get_global_input_seq_by_index(gsi: uint) -> Sequence {
 /// Returns the global input `Sequence` whose label matches `label`.
 #[track_caller]
 pub fn get_global_input_seq_by_label(label: &str) -> Sequence {
-    let state = GLOBAL_INPUT_STATE.lock().unwrap();
+    let state = global_input_state_lock();
     let seq = state
         .label_to_seq
         .get(label)

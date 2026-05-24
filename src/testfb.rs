@@ -2,6 +2,41 @@
 #[allow(unused_imports)]
 use crate::*;
 
+fn format_g3_value(d: f32) -> String {
+    if d == 0.0 {
+        return "0".to_string();
+    }
+    if !d.is_finite() {
+        return d.to_string();
+    }
+    let d64 = f64::from(d);
+    let exp = d64.abs().log10().floor() as i32;
+    let mut s = if exp < -4 || exp >= 3 {
+        let raw = format!("{d64:.2e}");
+        let (mantissa, exponent) = raw.split_once('e').unwrap();
+        let mut mantissa = mantissa
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_string();
+        if mantissa == "-0" {
+            mantissa = "0".to_string();
+        }
+        let exp_value = exponent.parse::<i32>().unwrap();
+        let sign = if exp_value >= 0 { '+' } else { '-' };
+        format!("{mantissa}e{sign}{:02}", exp_value.abs())
+    } else {
+        let decimals = (2 - exp).max(0) as usize;
+        format!("{d64:.decimals$}")
+    };
+    if !s.contains('e') && !s.contains('E') {
+        s = s.trim_end_matches('0').trim_end_matches('.').to_string();
+    }
+    if s == "-0" {
+        s = "0".to_string();
+    }
+    s
+}
+
 /// String-input wrapper around the flat backward HMM calculator.
 #[track_caller]
 pub fn calc_bwd_flat_l22(x: &str, y: &str, flat: &mut [f32]) {
@@ -307,38 +342,53 @@ pub fn cvt_flat(flat: &[f32], lx: uint, ly: uint) -> Vec<Vec<Vec<f32>>> {
     mxs
 }
 
-/// Forward/backward smoke-test scaffold for a single pair of sequences.
+/// Forward/backward smoke-test for a single pair of sequences.
 #[track_caller]
-pub fn test_l182() -> String {
-    let x = String::new();
-    let y = String::new();
-    let do_fwd = false;
-    let do_bwd = false;
+pub fn test_pair(x: &str, y: &str, do_fwd: bool, do_bwd: bool) -> String {
     let lx = x.len() as uint;
     let ly = y.len() as uint;
-    let flat_len = (lx + 1) * (ly + 1) * HMMSTATE_COUNT as uint;
-    let post_len = lx * ly;
-    let flat_fwd = vec![INVALID_LOG; flat_len as usize];
-    let flat_bwd = vec![INVALID_LOG; flat_len as usize];
-    let post_flat = vec![0.0_f32; post_len as usize];
-    let tom_mxs_fwd = Vec::<Vec<Vec<f32>>>::new();
-    let tom_mxs_bwd = Vec::<Vec<Vec<f32>>>::new();
-    let simple_mxs_fwd = Vec::<Vec<Vec<f32>>>::new();
-    let simple_mxs_bwd = Vec::<Vec<Vec<f32>>>::new();
+    let mut flat_fwd = alloc_fb(lx, ly);
+    let mut flat_bwd = alloc_fb(lx, ly);
+    let mut post_flat = alloc_post(lx, ly);
+    let mut out = String::new();
+
+    set_alpha_amino();
+    init_probcons();
+
     if do_fwd {
-        let flat_mxs_fwd = cvt_flat(&flat_fwd, lx, ly);
-        assert_eq!(tom_mxs_fwd.len(), simple_mxs_fwd.len());
-        assert_eq!(flat_mxs_fwd.len(), HMMSTATE_COUNT as usize);
+        calc_fwd_flat_l31(x, y, &mut flat_fwd);
+        let _flat_mxs_fwd = cvt_flat(&flat_fwd, lx, ly);
     }
     if do_bwd {
-        let flat_mxs_bwd = cvt_flat(&flat_bwd, lx, ly);
-        assert_eq!(tom_mxs_bwd.len(), simple_mxs_bwd.len());
-        assert_eq!(flat_mxs_bwd.len(), HMMSTATE_COUNT as usize);
+        calc_bwd_flat_l22(x, y, &mut flat_bwd);
+        let _flat_mxs_bwd = cvt_flat(&flat_bwd, lx, ly);
     }
     if do_fwd && do_bwd {
-        assert!(post_flat.is_empty());
+        let total = calc_total_prob_flat(&flat_fwd, &flat_bwd, lx, ly);
+        assert!(total.is_finite() || total == LOG_ZERO);
+
+        calc_post_flat(&flat_fwd, &flat_bwd, lx, ly, &mut post_flat);
+
+        let mut mm = MySparseMx::default();
+        my_sparse_mx_from_post(&mut mm, &post_flat, lx, ly);
+        out.push_str(&my_sparse_mx_log_me(&mm));
+
+        let mut dp_rows = alloc_dp_rows(lx, ly);
+        let mut tb = alloc_tb(lx, ly);
+        let (my_score, path) = calc_aln_flat(&post_flat, lx, ly, &mut dp_rows, &mut tb);
+        out.push_str(&format!("Scores {}\n", format_g3_value(my_score)));
+        out.push('\n');
+        out.push_str(&format!("  Path  {path}\n"));
+        out.push_str(&log_aln_l126(x, y, &path));
     }
-    String::new()
+    out
+}
+
+/// Compatibility wrapper for the generated line-number helper. The compiled
+/// C++ command does not call the disabled `Test` body by default.
+#[track_caller]
+pub fn test_l182() -> String {
+    test_pair("", "", false, false)
 }
 
 /// Returns a random sequence of length in `[min_len, max_len)` using the
@@ -355,13 +405,15 @@ pub fn get_random_seq(min_len: uint, max_len: uint) -> String {
     seq
 }
 
-/// Timing benchmark scaffold for forward/backward computations.
+/// Timing benchmark for forward/backward computations.
 #[track_caller]
 pub fn test_timing() -> String {
     let mut seqs = Vec::<String>::new();
     let mut tom_seqs = Vec::<Sequence>::new();
-    let n = 0_u32;
+    let n = 50_u32;
     let max_l = 300_u32;
+    set_alpha_amino();
+    init_probcons();
     for _ in 0..n {
         let seq = get_random_seq(max_l / 2, max_l);
         let mut tom_seq = Sequence::default();
@@ -369,19 +421,22 @@ pub fn test_timing() -> String {
         seqs.push(seq);
         tom_seqs.push(tom_seq);
     }
-    let my_ticks = 0.0_f64;
-    let tom_ticks = 0.0_f64;
+    let mut flat = alloc_fb(max_l, max_l);
+    for seqi in &seqs {
+        for seqj in &seqs {
+            calc_fwd_flat_l31(seqi, seqj, &mut flat);
+            calc_bwd_flat_l22(seqi, seqj, &mut flat);
+        }
+    }
     assert_eq!(seqs.len(), tom_seqs.len());
-    assert_eq!(my_ticks, tom_ticks);
     String::new()
 }
 
 /// Runs the forward/backward test scaffold across a few short fixed
 /// sequence pairs.
 #[track_caller]
-pub fn test_short() -> String {
-    let do_fwd = false;
-    let do_bwd = false;
+pub fn test_short_with(do_fwd: bool, do_bwd: bool) -> String {
+    let mut out = String::new();
     let cases = [
         ("MQTIF", "MSIF"),
         ("GATTACA", "MQTIF"),
@@ -389,22 +444,26 @@ pub fn test_short() -> String {
         ("LQNGSEQVENCE", "QTHERSEQVENCEINSERT"),
     ];
     for (x, y) in cases {
-        if do_fwd || do_bwd {
-            assert!(!x.is_empty());
-            assert!(!y.is_empty());
-        }
+        out.push_str(&test_pair(x, y, do_fwd, do_bwd));
     }
-    String::new()
+    out
+}
+
+/// Compatibility wrapper matching the previous generated no-op default.
+#[track_caller]
+pub fn test_short() -> String {
+    test_short_with(false, false)
 }
 
 /// Runs the forward/backward test scaffold across longer sequence pairs.
 #[track_caller]
-pub fn test_long() -> String {
-    let max_l = 0_u32;
-    let do_fwd = false;
-    let do_bwd = false;
+pub fn test_long_with(max_l: uint, do_fwd: bool, do_bwd: bool) -> String {
     let mut seqs = Vec::<String>::new();
-    for _ in 0..0 {
+    let mut out = String::new();
+    assert!(max_l > 1);
+    set_alpha_amino();
+    init_probcons();
+    for _ in 0..10 {
         seqs.push(get_random_seq(max_l / 2, max_l));
     }
     seqs.push("LSIDGKKYDTRLVATLLWFASLVLQDHVVDRYKDAADVLITETIYALLVTFSGTVVAKHGGNASGGYLTLILNCLVQLLLLIRSNIKRCGCTIGRCLVPAIIGDDGTY".to_string());
@@ -417,12 +476,15 @@ pub fn test_long() -> String {
         let x = &seqs[i as usize];
         for j in 0..n {
             let y = &seqs[j as usize];
-            if do_fwd || do_bwd {
-                assert!(!x.is_empty());
-                assert!(!y.is_empty());
-            }
+            out.push_str(&test_pair(x, y, do_fwd, do_bwd));
         }
     }
+    out
+}
+
+/// Compatibility wrapper matching the previous generated no-op default.
+#[track_caller]
+pub fn test_long() -> String {
     String::new()
 }
 

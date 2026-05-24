@@ -12,4 +12,5 @@ pub struct ObjMgr {
 pub struct Obj {
     pub type_: ObjType,
     pub ref_count: uint,
+    pub id: usize,
 } // original: Obj (muscle/src/obj.h)

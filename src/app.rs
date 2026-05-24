@@ -265,6 +265,8 @@ pub struct MuscleCli {
     #[arg(long)]
     pub labels2: Option<String>,
     #[arg(long)]
+    pub savedir: Option<String>,
+    #[arg(long)]
     pub prefix: Option<String>,
     #[arg(long)]
     pub suffix: Option<String>,
@@ -426,6 +428,8 @@ pub struct MuscleCli {
     pub reseek: bool,
     #[arg(long)]
     pub quiet: bool,
+    #[arg(long)]
+    pub verbose: bool,
     /// `-fa2efa` option: replace each MSA name with its file's basename.
     #[arg(long)]
     pub basename: bool,
@@ -454,11 +458,490 @@ fn format_percent_g3(v: f64) -> String {
     }
 }
 
+fn is_cpp_option_name(name: &str) -> bool {
+    name == "version"
+        || FLAG_OPT_NAMES.contains(&name)
+        || UNS_OPT_NAMES.contains(&name)
+        || FLT_OPT_NAMES.contains(&name)
+        || STR_OPT_NAMES.contains(&name)
+}
+
+fn has_rust_only_dashed_alias(args: &[String]) -> bool {
+    args.iter().skip(1).any(|arg| {
+        let Some(name) = arg.strip_prefix("--").or_else(|| arg.strip_prefix('-')) else {
+            return false;
+        };
+        name.contains('-')
+            && !is_cpp_option_name(name)
+            && is_cpp_option_name(&name.replace('-', "_"))
+    })
+}
+
+fn selected_command_opt(cli: &MuscleCli) -> Option<(&'static str, &str)> {
+    macro_rules! command_opt {
+        ($($field:ident),+ $(,)?) => {{
+            let mut selected = None;
+            $(
+                if let Some(value) = cli.$field.as_deref() {
+                    selected = Some((stringify!($field), value));
+                }
+            )+
+            selected
+        }};
+    }
+
+    command_opt!(
+        align,
+        upgma5,
+        msastats,
+        pprog,
+        pprog2,
+        pprogt,
+        strip_gappy,
+        strip_gappy_cols,
+        strip_gappy_rows,
+        guide_tree_join_order,
+        eadistmx,
+        eadistmx_msas,
+        tree_subset_nodes,
+        consseq,
+        super4,
+        usorter,
+        permute_tree,
+        divide_tree,
+        qscore,
+        qscore_oldcode,
+        qscore2,
+        qscoredir,
+        eacluster,
+        derep,
+        uclust,
+        super5,
+        super6,
+        transaln,
+        hmmdump,
+        perturbhmm,
+        resample,
+        disperse,
+        efastats,
+        fa2efa,
+        colscore_efa,
+        qscore_efa,
+        efa_bestconf,
+        efa_bestcols,
+        trimtoref,
+        trimtoref_efa,
+        efa_explode,
+        relabel,
+        addconfseq,
+        labels2randomchaintree,
+        maxcc,
+        letterconf,
+        letterconf_html,
+        make_a2m,
+        make_a2m_refseq,
+        eesort,
+        strip_anchors,
+        profalign,
+        profseq,
+        protdists,
+        uclustpd,
+        uclustpd2,
+        searchpd,
+        build_guide_tree,
+        test_malloc,
+        upgma5_msa,
+        pprog_tree,
+        test,
+        build_prof3,
+        profprof3,
+        muscle3,
+        make_substmx,
+        bench,
+        bench_blosums,
+        sweep,
+        spatter,
+        msaselfscore3,
+        batch,
+        m3ensemble,
+        m3select,
+        m3refine,
+        addletterconfseq,
+        cmp_msa,
+        cmp_ref_msas,
+        squeeze_inserts,
+        newbench_selectpfams,
+        newbench_pfamgroups,
+        mustang_core,
+        test_mega,
+        shrub,
+        super7,
+        swdistmx,
+        transalnref,
+        mega_msas,
+        masm_train,
+        sw,
+        swmasm,
+        swmasm_seq,
+        masm_stats,
+        mega2,
+        test_sw_aa,
+        test_sw_mm,
+        swtest,
+        swtestmm,
+        swsimple2,
+        core_blocks,
+    )
+}
+
+/// Options consumed directly in the Rust app dispatch glue for each command.
+///
+/// This table intentionally excludes options consumed deeper in translated
+/// helpers; those need helper-level marking so real unused-option warnings are
+/// not hidden.
+#[track_caller]
+pub fn app_dispatch_used_opts_for_command(cmd_name: &str) -> &'static [&'static str] {
+    match cmd_name {
+        "msastats" => &["max_gap_fract"],
+        "derep" => &["output"],
+        "consseq" => &["output", "label"],
+        "fa2efa" => &["output", "basename", "intsuffix"],
+        "qscore" => &["ref", "bysequence"],
+        "qscore_oldcode" => &["ref", "verbose"],
+        "qscore2" => &["ref", "max_gap_fract"],
+        "qscoredir" => &["testdir", "refdir", "output", "max_gap_fract"],
+        "qscore_efa" => &["ref", "max_gap_fract"],
+        "efastats" => &["max_gap_fract", "ref"],
+        "disperse" => &["max_gap_fract"],
+        "efa_bestconf" => &["output"],
+        "efa_bestcols" => &["output", "minconf", "max_gap_fract", "maxcols"],
+        "efa_explode" => &["prefix", "suffix"],
+        "addconfseq" => &["output", "ref", "label", "confseq1"],
+        "addletterconfseq" => &["ref", "output", "max_gap_fract"],
+        "letterconf" => &["ref", "output", "html", "jalview", "max_gap_fract"],
+        "letterconf_html" => &["ref", "output"],
+        "masm_train" => &["input", "output", "label"],
+        "make_a2m" => &["output", "max_gap_fract"],
+        "make_a2m_refseq" => &["output", "label"],
+        "core_blocks" => &["output", "min_core_block_cols", "min_core_block_seqs"],
+        "make_substmx" => &["output", "label", "minpctid", "maxpctid"],
+        "squeeze_inserts" => &["output", "max_gap_fract"],
+        "colscore_efa" => &["ref", "output", "max_gap_fract"],
+        "cmp_ref_msas" => &["ref", "max_gap_fract"],
+        "cmp_msa" => &["ref", "output"],
+        "eadistmx" => &["output"],
+        "eadistmx_msas" => &["output", "paircount"],
+        "align" => &[
+            "output",
+            "minsuper",
+            "consiters",
+            "refineiters",
+            "stratified",
+            "diversified",
+            "replicates",
+            "perturb",
+            "perm",
+            "s_is",
+            "s_il",
+            "m_is",
+            "m_il",
+            "is_is",
+            "il_il",
+            "input_order",
+            "super5_minea1",
+            "mega",
+            "paircount",
+            "super4_minea1",
+            "super4_minea2",
+            "threads",
+        ],
+        "profalign" => &[
+            "input2", "output", "perturb", "s_is", "s_il", "m_is", "m_il", "is_is", "il_il",
+        ],
+        "profseq" => &[
+            "input2", "perturb", "s_is", "s_il", "m_is", "m_il", "is_is", "il_il",
+        ],
+        "build_prof3" => &[
+            "substmx",
+            "gapopen",
+            "center",
+            "blosumpct",
+            "perturb",
+            "linkage",
+            "treeiters",
+            "output",
+        ],
+        "profprof3" => &[
+            "substmx",
+            "gapopen",
+            "center",
+            "blosumpct",
+            "perturb",
+            "linkage",
+            "treeiters",
+            "input2",
+            "output",
+            "output1",
+            "output2",
+            "output3",
+            "output4",
+        ],
+        "protdists" => &["output", "threads"],
+        "searchpd" => &["output", "db", "maxpd", "tsvout", "threads"],
+        "eacluster" => &["minea", "output", "nt", "amino"],
+        "eesort" => &["db", "output", "tsvout"],
+        "maxcc" => &["output"],
+        "mustang_core" => &["output"],
+        "labels2randomchaintree" => &["output"],
+        "relabel" => &["labels2", "output"],
+        "resample" => &["output", "max_gap_fract", "minconf", "replicates"],
+        "perturbhmm" => &["nt", "amino"],
+        "sw" => &[],
+        "swmasm" => &["query", "output"],
+        "swmasm_seq" => &["input", "input2", "output"],
+        "newbench_pfamgroups" => &["input", "output"],
+        "newbench_selectpfams" => &["output"],
+        "msaselfscore3" => &[
+            "substmx",
+            "gapopen",
+            "center",
+            "blosumpct",
+            "blosumparamset",
+            "perturb",
+            "linkage",
+            "kmerdist",
+            "treeiters",
+        ],
+        "masm_stats" => &[],
+        "muscle3" => &[
+            "output",
+            "guidetreeout",
+            "muscle3_randomorder",
+            "substmx",
+            "gapopen",
+            "center",
+            "blosumpct",
+            "blosumparamset",
+            "perturb",
+            "linkage",
+            "kmerdist",
+            "treeiters",
+        ],
+        "batch" => &[
+            "substmx",
+            "gapopen",
+            "center",
+            "blosumpct",
+            "blosumparamset",
+            "perturb",
+            "linkage",
+            "kmerdist",
+            "treeiters",
+            "indir",
+            "outdir",
+        ],
+        "bench" => &[
+            "substmx",
+            "gapopen",
+            "center",
+            "blosumpct",
+            "blosumparamset",
+            "perturb",
+            "linkage",
+            "kmerdist",
+            "treeiters",
+            "refdir",
+            "tsvout",
+        ],
+        "bench_blosums" => &["refdir", "tsvout"],
+        "m3ensemble" => &["output", "replicates", "threads"],
+        "m3select" => &["output", "replicates", "threads"],
+        "m3refine" => &[
+            "substmx",
+            "gapopen",
+            "center",
+            "blosumpct",
+            "blosumparamset",
+            "perturb",
+            "linkage",
+            "kmerdist",
+            "treeiters",
+        ],
+        "swdistmx" => &["guidetreeout"],
+        "uclustpd" => &["maxpd", "output", "tsvout", "threads"],
+        "uclustpd2" => &[
+            "maxpd",
+            "output",
+            "tsvout",
+            "output1",
+            "output2",
+            "centroids",
+            "threads",
+        ],
+        "uclust" => &["output", "minea"],
+        "super4" => &[
+            "output",
+            "perm",
+            "mega",
+            "paircount",
+            "super4_minea1",
+            "super4_minea2",
+            "consiters",
+            "refineiters",
+            "input_order",
+        ],
+        "super5" => &[
+            "output",
+            "perm",
+            "perturb",
+            "super5_minea1",
+            "input_order",
+            "mega",
+            "diversified",
+            "replicates",
+            "stratified",
+            "paircount",
+            "super4_minea1",
+            "super4_minea2",
+            "consiters",
+            "refineiters",
+        ],
+        "super6" => &[
+            "output",
+            "nt",
+            "amino",
+            "super6_maxpd1",
+            "threads",
+            "input_order",
+        ],
+        "upgma5" => &["output", "reseek", "scaledist", "eadist", "linkage"],
+        "upgma5_msa" => &["output", "linkage"],
+        "guide_tree_join_order" => &["output"],
+        "permute_tree" => &["prefix"],
+        "tree_subset_nodes" => &["nodes", "output", "right"],
+        "divide_tree" => &["label1", "label2", "subtreeout", "supertreeout"],
+        "shrub" => &["n"],
+        "super7" => &[
+            "mega",
+            "output",
+            "shrub_size",
+            "guidetreein",
+            "distmxin",
+            "input_order",
+        ],
+        "sweep" => &[
+            "gridspec",
+            "refdir",
+            "fev",
+            "blosumpct",
+            "substmx",
+            "treeiters",
+        ],
+        "spatter" => &[
+            "warmup_pct",
+            "maxiters",
+            "maxfailiters",
+            "triesperiter",
+            "shrink",
+            "gridspec",
+            "spatterspec",
+            "refdir",
+            "output1",
+            "fev",
+            "blosumpct",
+            "substmx",
+        ],
+        "mega2" => &["output", "gapopen", "gapext", "termgapopen", "termgapext"],
+        "mega_msas" => &["input", "output"],
+        "pprog" => &["output", "guidetreeout", "savedir", "paircount"],
+        "pprog2" => &["joins", "output", "paircount", "savedir"],
+        "pprog_tree" => &["guidetreein", "output", "paircount"],
+        "pprogt" => &["guidetreein", "output", "guidetreeout", "paircount"],
+        "strip_anchors" => &["output"],
+        "strip_gappy" => &["output", "max_gap_fract", "max_gap_fract_row"],
+        "strip_gappy_cols" => &["output", "max_gap_fract"],
+        "strip_gappy_rows" => &["output", "max_gap_fract"],
+        "trimtoref" => &["ref", "output"],
+        "trimtoref_efa" => &["ref", "output"],
+        "usorter" => &["input"],
+        "transaln" => &["ref", "output"],
+        "transalnref" => &["input2", "label", "output"],
+        "hmmdump" => &["nt", "s_is", "s_il", "m_is", "m_il", "is_is", "il_il"],
+        "test_malloc" => &[],
+        "swsimple2" => &[],
+        "build_guide_tree" => &[],
+        "test" => &[],
+        "test_mega" => &[],
+        "test_sw_aa" => &[],
+        "test_sw_mm" => &[],
+        "swtest" => &[],
+        "swtestmm" => &[],
+        _ => &[],
+    }
+}
+
+#[track_caller]
+fn mark_app_dispatch_used_opts(use_cpp_lifecycle: bool, cmd_name: &str) {
+    if use_cpp_lifecycle {
+        set_cmd_opts_used(app_dispatch_used_opts_for_command(cmd_name));
+    }
+}
+
+/// Marks option uses performed by C++ `main.cpp` before command dispatch.
+#[track_caller]
+pub fn mark_main_cpp_entry_opts_used(cli: &MuscleCli) {
+    let _ = cli;
+    set_cmd_opt_used("quiet");
+    set_cmd_opt_used("log");
+}
+
 /// CLI entry point: parses MUSCLE-style command-line arguments and dispatches to the chosen subcommand.
 #[track_caller]
 pub fn main() {
+    let raw_args: Vec<String> = std::env::args().collect();
+    main_with_args(raw_args);
+}
+
+/// Raw CLI entry point for library users that want MUSCLE command-line
+/// semantics without spawning the optional binary.
+///
+/// `raw_args` must include argv[0], matching `std::env::args()`.
+#[track_caller]
+pub fn main_with_args(raw_args: Vec<String>) {
+    set_die_process_exit_enabled(true);
+    if raw_args
+        .iter()
+        .skip(1)
+        .any(|arg| arg == "-h" || arg == "-help" || arg == "--help")
+    {
+        print!("{}", usage());
+        return;
+    }
+    let use_cpp_lifecycle = !has_rust_only_dashed_alias(&raw_args);
+    if use_cpp_lifecycle {
+        match my_cmd_line_cpp_literal_action(&raw_args) {
+            CppLifecycleAction::Continue => {}
+            CppLifecycleAction::Exit {
+                status,
+                stdout,
+                stderr,
+            } => {
+                if !stdout.is_empty() {
+                    print!("{stdout}");
+                }
+                if !stderr.is_empty() {
+                    eprint!("{stderr}");
+                }
+                if status != 0 {
+                    std::process::exit(status);
+                }
+                return;
+            }
+        }
+    }
+
     let mut normalized_args = Vec::new();
-    for (i, arg) in std::env::args().enumerate() {
+    for (i, arg) in raw_args.into_iter().enumerate() {
         if i > 0
             && arg.starts_with('-')
             && !arg.starts_with("--")
@@ -477,6 +960,7 @@ pub fn main() {
     if !cli.quiet {
         eprint!("{}", print_banner());
     }
+    set_quiet(cli.quiet);
     // C++ `optset_perturb && opt(perturb)` is a process-global flag consulted
     // by setprobconsparams.cpp:InitProbcons. Publish it once at startup so
     // every command path picks up the same perturbation as C++.
@@ -484,16 +968,20 @@ pub fn main() {
     set_guidetreeout_path(cli.guidetreeout.clone());
     set_hmmin_path(cli.hmmin.clone());
     set_hmmout_path(cli.hmmout.clone());
+    set_hmm_cmd_line_update(cli.s_is, cli.s_il, cli.m_is, cli.m_il, cli.is_is, cli.il_il);
     set_randomchaintree_enabled(cli.randomchaintree);
     if let Some(path) = cli.log.as_deref() {
         // Mirror C++ main.cpp:34 `SetLogFileName(opt(log))`.
         set_log_file_name(path);
     }
-    if let Some(seed) = cli.randseed {
-        // Mirror C++ myutils.cpp:2244-2245 InitRand: when -randseed is set,
-        // seed the MWC generator before any randu32 call.
-        reset_rand(seed);
+    if use_cpp_lifecycle {
+        mark_main_cpp_entry_opts_used(&cli);
     }
+    if use_cpp_lifecycle {
+        log_program_info_and_cmd_line();
+        main_cpp_short_cmd_progress();
+    }
+    set_pending_rand_seed(cli.randseed);
     let cmd_count = [
         cli.align.is_some(),
         cli.upgma5.is_some(),
@@ -602,6 +1090,13 @@ pub fn main() {
     if cmd_count > 1 {
         die("More than one command specified");
     }
+    if let Some((cmd_name, arg1)) = selected_command_opt(&cli) {
+        set_arg1(arg1);
+        if use_cpp_lifecycle {
+            set_cmd_opt_used(cmd_name);
+            mark_app_dispatch_used_opts(use_cpp_lifecycle, cmd_name);
+        }
+    }
     let out = if let Some(input_file_name) = &cli.msastats {
         cmd_msastats(input_file_name, cli.max_gap_fract)
     } else if let Some(input_file_name) = &cli.derep {
@@ -634,8 +1129,12 @@ pub fn main() {
             format_percent_g3(tc)
         )
     } else if let Some(input_file_name) = &cli.qscore_oldcode {
-        let (_q, _tc, log) = cmd_qscore_oldcode(input_file_name, cli.ref_.as_deref().unwrap_or(""));
-        log
+        let _ = cmd_qscore_oldcode_with_options(
+            input_file_name,
+            cli.ref_.as_deref().unwrap_or(""),
+            cli.verbose,
+        );
+        String::new()
     } else if let Some(input_file_name) = &cli.qscore2 {
         cmd_qscore2(
             input_file_name,
@@ -643,22 +1142,14 @@ pub fn main() {
             cli.max_gap_fract.unwrap_or(1.0),
         )
     } else if let Some(input_file_name) = &cli.qscoredir {
-        // C++ qscoredir writes only to `-output` (CreateStdioFile("") returns
-        // NULL so a missing -output silently drops the data). We match that
-        // when -output is set, and otherwise fall back to stdout — a strict
-        // improvement on the C++ no-op behaviour.
-        let result = cmd_qscoredir(
+        let _ = cmd_qscoredir(
             input_file_name,
             cli.testdir.as_deref().unwrap_or(""),
             cli.refdir.as_deref().unwrap_or(""),
             cli.output.as_deref().unwrap_or(""),
             cli.max_gap_fract.unwrap_or(0.5),
         );
-        if cli.output.is_some() {
-            String::new()
-        } else {
-            result
-        }
+        String::new()
     } else if let Some(input_file_name) = &cli.qscore_efa {
         cmd_qscore_efa(
             input_file_name,
@@ -735,7 +1226,8 @@ pub fn main() {
         );
         String::new()
     } else if let Some(input_file_name) = &cli.masm_stats {
-        cmd_masm_stats(input_file_name)
+        let _ = cmd_masm_stats(input_file_name);
+        String::new()
     } else if let Some(input_file_name) = &cli.make_a2m {
         cmd_make_a2m(
             input_file_name,
@@ -759,15 +1251,20 @@ pub fn main() {
             cli.min_core_block_seqs.unwrap_or(2),
         )
     } else if let Some(input_file_name) = &cli.make_substmx {
-        cmd_make_substmx(
+        let _ = cmd_make_substmx(
             input_file_name,
             cli.output.as_deref().unwrap_or(""),
             cli.label.as_deref(),
             cli.minpctid,
             cli.maxpctid,
-        )
+        );
+        String::new()
     } else if let Some(input_file_name) = &cli.squeeze_inserts {
-        let _out_msa = cmd_squeeze_inserts(input_file_name, cli.output.as_deref().unwrap_or(""));
+        let _out_msa = cmd_squeeze_inserts(
+            input_file_name,
+            cli.output.as_deref().unwrap_or(""),
+            cli.max_gap_fract,
+        );
         String::new()
     } else if let Some(input_file_name) = &cli.colscore_efa {
         // C++ colscore_efa writes only to `-output`; suppress stdout when it
@@ -1098,24 +1595,16 @@ pub fn main() {
         );
         log
     } else if let Some(input_file_name) = &cli.protdists {
-        cmd_protdists(
+        cmd_protdists_threaded(
             input_file_name,
             cli.output.as_deref().unwrap_or(""),
-            |seqi, li, seqj, lj| {
-                let mut mem = XDPMem::default();
-                let mut pi = PathInfo::default();
-                viterbi_fast_mem(&mut mem, seqi, li, seqj, lj, &mut pi);
-                pi
-            },
-            |row_x, row_y, col_count| {
-                get_prot_dist_l42(row_x.as_bytes(), row_y.as_bytes(), col_count)
-            },
+            cli.threads,
         )
     } else if let Some(input_file_name) = &cli.searchpd {
         if cli.output.is_some() {
             die("Use -tsvout not -output");
         }
-        cmd_searchpd(
+        cmd_searchpd_threaded(
             input_file_name,
             cli.db.as_deref().unwrap_or_else(|| {
                 die("Must set -db");
@@ -1124,21 +1613,21 @@ pub fn main() {
                 die("Must set -maxpd");
             }),
             cli.tsvout.as_deref().unwrap_or(""),
-            |seqi, li, seqj, lj| {
-                let mut mem = XDPMem::default();
-                let mut pi = PathInfo::default();
-                viterbi_fast_mem(&mut mem, seqi, li, seqj, lj, &mut pi);
-                pi
-            },
-            |row_x, row_y, col_count| {
-                get_prot_dist_l42(row_x.as_bytes(), row_y.as_bytes(), col_count)
-            },
+            cli.threads,
         )
     } else if let Some(input_file_name) = &cli.eacluster {
+        let force_nucleo = if cli.nt {
+            Some(true)
+        } else if cli.amino {
+            Some(false)
+        } else {
+            None
+        };
         let (_ec, _files) = cmd_eacluster(
             input_file_name,
             cli.minea.unwrap_or(0.9),
             cli.output.as_deref().unwrap_or("cluster%.afa"),
+            force_nucleo,
             |label1, label2| ea_cluster_align_seq_pair(label1, label2),
         );
         String::new()
@@ -1163,7 +1652,8 @@ pub fn main() {
             cmd_maxcc(input_file_name, cli.output.as_deref().unwrap());
         String::new()
     } else if let Some(input_file_name) = &cli.mustang_core {
-        cmd_mustang_core(input_file_name, cli.output.as_deref().unwrap_or(""))
+        let _ = cmd_mustang_core(input_file_name, cli.output.as_deref().unwrap_or(""));
+        String::new()
     } else if let Some(input_file_name) = &cli.labels2randomchaintree {
         let _tree =
             cmd_labels2randomchaintree(input_file_name, cli.output.as_deref().unwrap_or(""));
@@ -1241,32 +1731,30 @@ pub fn main() {
             cmd_msaselfscore3(input_file_name, &ap.subst_mx_letter, ap.gap_open);
         log
     } else if let Some(input_file_name) = &cli.muscle3 {
-        let mut ap = M3AlnParams::default();
-        let _ = m3_aln_params_set_from_cmd_line(
-            &mut ap,
-            false,
-            false,
-            cli.substmx.as_deref(),
-            cli.gapopen,
-            cli.center,
-            cli.blosumpct,
-            cli.blosumparamset,
-            cli.perturb,
-            cli.linkage.as_deref(),
-            cli.kmerdist.as_deref(),
-            cli.treeiters,
-        );
         let (_msa, _tree) = cmd_muscle3(
             input_file_name,
             cli.output.as_deref().unwrap_or(""),
             cli.guidetreeout.as_deref(),
             cli.muscle3_randomorder,
-            &ap,
-            |ap, input_seqs| {
-                set_global_input_ms(input_seqs);
-                let mut m3 = Muscle3::default();
-                let final_msa = muscle3_run(
-                    &mut m3,
+            |ap, is_nucleo| {
+                let _ = m3_aln_params_set_from_cmd_line(
+                    ap,
+                    is_nucleo,
+                    false,
+                    cli.substmx.as_deref(),
+                    cli.gapopen,
+                    cli.center,
+                    cli.blosumpct,
+                    cli.blosumparamset,
+                    cli.perturb,
+                    cli.linkage.as_deref(),
+                    cli.kmerdist.as_deref(),
+                    cli.treeiters,
+                );
+            },
+            |m3, ap, input_seqs| {
+                muscle3_run(
+                    m3,
                     ap,
                     input_seqs,
                     |u, linkage, tree| upgma5_run_l75(u, linkage, tree),
@@ -1297,16 +1785,11 @@ pub fn main() {
                         );
                         pp.msa.clone()
                     },
-                );
-                (final_msa, m3.guide_tree)
+                )
             },
-            |ap, input_seqs| {
-                let mut m3 = Muscle3 {
-                    ap: Some(ap.clone()),
-                    ..Muscle3::default()
-                };
+            |m3, ap, input_seqs| {
                 muscle3_run_ro(
-                    &mut m3,
+                    m3,
                     ap,
                     input_seqs,
                     |cm, prof_a, prof_b| nw_small3(cm, prof_a, prof_b).1,
@@ -1354,6 +1837,8 @@ pub fn main() {
             cli.outdir.as_deref().unwrap_or(""),
             &ap,
             |m3, ap, input_seqs| {
+                static BATCH_GLOBAL_INPUT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+                let _global_input_guard = BATCH_GLOBAL_INPUT_LOCK.lock().unwrap();
                 set_global_input_ms(input_seqs);
                 muscle3_run(
                     m3,
@@ -1516,27 +2001,20 @@ pub fn main() {
             input_file_name,
             cli.output.as_deref().unwrap_or(""),
             cli.replicates,
+            cli.threads,
         )
     } else if let Some(input_file_name) = &cli.m3refine {
         let (_msa, _labels, _weights, _tree, _ap, _refined, log) = cmd_m3refine(
             input_file_name,
-            |u, tree| upgma5_run_l75(u, "biased", tree),
-            |ap| {
-                let _ = m3_aln_params_set_from_cmd_line(
-                    ap,
-                    false,
-                    false,
-                    cli.substmx.as_deref(),
-                    cli.gapopen,
-                    cli.center,
-                    cli.blosumpct,
-                    cli.blosumparamset,
-                    cli.perturb,
-                    cli.linkage.as_deref(),
-                    cli.kmerdist.as_deref(),
-                    cli.treeiters,
-                );
-            },
+            cli.substmx.as_deref(),
+            cli.gapopen,
+            cli.center,
+            cli.blosumpct,
+            cli.blosumparamset,
+            cli.perturb,
+            cli.linkage.as_deref(),
+            cli.kmerdist.as_deref(),
+            cli.treeiters,
             |msa, ap, weights, refined_msa| {
                 m3_refine(msa, ap, weights, refined_msa, |cm, prof_a, prof_b| {
                     nw_small3(cm, prof_a, prof_b).1
@@ -2283,6 +2761,7 @@ pub fn main() {
             input_file_name,
             cli.output.as_deref().unwrap_or(""),
             cli.guidetreeout.as_deref(),
+            cli.savedir.as_deref(),
             cli.paircount,
             |label, msa1, msa2, pair_count, path| {
                 p_prog_align_ms_as_flat(label, msa1, msa2, pair_count, path)
@@ -2295,6 +2774,7 @@ pub fn main() {
             cli.joins.as_deref().unwrap_or(""),
             cli.output.as_deref().unwrap_or(""),
             cli.paircount,
+            cli.savedir.as_deref(),
             |label, msa1, msa2, pair_count, path| {
                 p_prog_align_ms_as_flat(label, msa1, msa2, pair_count, path)
             },
@@ -2575,5 +3055,9 @@ pub fn main() {
     };
     if !out.is_empty() {
         print!("{out}");
+    }
+    if use_cpp_lifecycle && cmd_count == 1 {
+        check_used_opts(false);
+        log_elapsed_time_and_ram();
     }
 }

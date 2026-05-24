@@ -4,7 +4,9 @@ use crate::*;
 
 #[derive(Clone, Debug, Default)]
 pub struct Muscle3 {
+    pub ap_addr: Option<usize>,
     pub ap: Option<M3AlnParams>,
+    pub input_seqs_addr: Option<usize>,
     pub input_seqs: Option<MultiSequence>,
     pub dist_mx: Vec<Vec<f32>>,
     pub k66: KmerDist66,
@@ -15,6 +17,7 @@ pub struct Muscle3 {
     pub input_seq_weights: Vec<f32>,
     pub pp3: PProg3,
     pub u5: UPGMA5,
+    pub final_msa_addr: Option<usize>,
     pub final_msa: Option<MultiSequence>,
 } // original: Muscle3 (muscle/src/muscle3.h)
 
@@ -31,9 +34,11 @@ where
     FRunUpgma: FnMut(&mut UPGMA5, &str, &mut Tree),
     FRunPProg3: FnMut(&mut PProg3, &MultiSequence, &[f32], &Tree) -> MultiSequence,
 {
+    m3.ap_addr = Some(ap as *const M3AlnParams as usize);
     m3.ap = Some(ap.clone());
     assert!(m3.ap.as_ref().unwrap().ready);
 
+    m3.input_seqs_addr = Some(input_seqs as *const MultiSequence as usize);
     m3.input_seqs = Some(input_seqs.clone());
     let seq_count = input_seqs.seqs.len() as uint;
 
@@ -101,6 +106,7 @@ where
         m3.pp3.msa = msa;
         assert!(multi_sequence_is_aligned(&m3.pp3.msa));
     }
+    m3.final_msa_addr = Some(&m3.pp3.msa as *const MultiSequence as usize);
     m3.final_msa = Some(m3.pp3.msa.clone());
     m3.final_msa.as_ref().unwrap().clone()
 }
@@ -131,6 +137,7 @@ where
 {
     assert!(m3.ap.is_some());
     assert!(m3.ap.as_ref().unwrap().ready);
+    m3.input_seqs_addr = Some(input_seqs as *const MultiSequence as usize);
     m3.input_seqs = Some(input_seqs.clone());
     let seq_count = input_seqs.seqs.len() as uint;
     let mut order = Vec::new();
@@ -207,5 +214,6 @@ where
         accumulated_msa = combined_msa;
     }
     m3.final_msa = Some(accumulated_msa);
+    m3.final_msa_addr = Some(m3.final_msa.as_ref().unwrap() as *const MultiSequence as usize);
     m3.final_msa.as_ref().unwrap().clone()
 }

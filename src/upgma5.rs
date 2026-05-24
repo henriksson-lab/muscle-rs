@@ -28,6 +28,41 @@ pub fn avg(x: f32, y: f32) -> f32 {
     (x + y) / 2.0
 }
 
+fn upgma5_format_g(d: f32, precision: usize) -> String {
+    if d == 0.0 {
+        return "0".to_string();
+    }
+    if !d.is_finite() {
+        return d.to_string();
+    }
+    let d64 = f64::from(d);
+    let exp = d64.abs().log10().floor() as i32;
+    let mut s = if exp < -4 || exp >= precision as i32 {
+        let raw = format!("{d64:.prec$e}", prec = precision - 1);
+        let (mantissa, exponent) = raw.split_once('e').unwrap();
+        let mut mantissa = mantissa
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_string();
+        if mantissa == "-0" {
+            mantissa = "0".to_string();
+        }
+        let exp_value = exponent.parse::<i32>().unwrap();
+        let sign = if exp_value >= 0 { '+' } else { '-' };
+        format!("{mantissa}e{sign}{:02}", exp_value.abs())
+    } else {
+        let decimals = (precision as i32 - 1 - exp).max(0) as usize;
+        format!("{d64:.decimals$}")
+    };
+    if !s.contains('e') && !s.contains('E') {
+        s = s.trim_end_matches('0').trim_end_matches('.').to_string();
+    }
+    if s == "-0" {
+        s = "0".to_string();
+    }
+    s
+}
+
 /// Render the current distance matrix, nearest-neighbor table, and join history for logging.
 #[track_caller]
 pub fn upgma5_log_me(u: &UPGMA5) -> String {
@@ -211,6 +246,7 @@ pub fn upgma5_run_l87(u: &mut UPGMA5, linkage: &str, tree: &mut Tree) {
     let join_count = u.leaf_count - 1;
     for internal_node_index in 0..join_count {
         u.internal_node_index = internal_node_index;
+        let _ = progress_step(internal_node_index, join_count, "UPGMA5");
         let mut lmin = uint::MAX;
         let mut rmin = uint::MAX;
         let mut dt_min_dist = f32::MAX;
@@ -477,7 +513,9 @@ pub fn upgma5_scale_dist_mx(u: &mut UPGMA5, input_is_similarity: bool) {
         }
     }
     let _ = progress_log(&format!(
-        "Re-scaling, min {min_dist:.4}, max {max_dist:.4}\n"
+        "Re-scaling, min {}, max {}\n",
+        upgma5_format_g(min_dist, 4),
+        upgma5_format_g(max_dist, 4)
     ));
 
     let mut min_new_dist = f32::MAX;
@@ -501,7 +539,9 @@ pub fn upgma5_scale_dist_mx(u: &mut UPGMA5, input_is_similarity: bool) {
         }
     }
     let _ = progress_log(&format!(
-        "Scaled min dist {min_new_dist:.3}, max {max_new_dist:.3}. scale\n"
+        "Scaled min dist {}, max {}. scale\n",
+        upgma5_format_g(min_new_dist, 3),
+        upgma5_format_g(max_new_dist, 3)
     ));
 }
 

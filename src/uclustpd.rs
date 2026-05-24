@@ -17,6 +17,10 @@ pub struct UClustPD {
 
 pub(crate) static UCLUST_PD_DP_MEMS: std::sync::Mutex<Vec<XDPMem>> =
     std::sync::Mutex::new(Vec::new());
+thread_local! {
+    static UCLUST_PD_THREAD_DP_MEM: std::cell::RefCell<XDPMem> =
+        std::cell::RefCell::new(XDPMem::default());
+}
 
 // One Rust stub per C++ function found by code-complexity-comparator.
 
@@ -46,17 +50,7 @@ pub fn with_dp_mem_l17<R, F>(f: F) -> R
 where
     F: FnOnce(&mut XDPMem) -> R,
 {
-    let mem_ptr = {
-        let mut mems = UCLUST_PD_DP_MEMS.lock().unwrap();
-        uclust_pd_ensure_dp_mems(&mut mems);
-        let thread_index = get_thread_index();
-        assert!(thread_index < mems.len() as uint);
-        &mut mems[thread_index as usize] as *mut XDPMem
-    };
-    // SAFETY: the global pool is initialized once and never reallocated after
-    // this point. C++ indexes one scratch object per worker thread; callers
-    // must preserve the same thread-index uniqueness when using this helper.
-    f(unsafe { &mut *mem_ptr })
+    UCLUST_PD_THREAD_DP_MEM.with(|mem| f(&mut mem.borrow_mut()))
 }
 
 /// Return the input sequence label at `seq_index`.

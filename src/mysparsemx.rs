@@ -127,11 +127,14 @@ pub fn my_sparse_mx_from_post(mx: &mut MySparseMx, post: &[f32], lx: uint, ly: u
     mx.ly = ly;
 
     my_sparse_mx_alloc_lx(mx, lx);
+    let mut entries = Vec::<(f32, uint)>::new();
     let mut offset = 0_u32;
     for i in 0..lx {
         mx.offsets[i as usize] = offset;
         for j in 0..ly {
-            if post[(i * ly + j) as usize] >= MIN_SPARSE_PROB {
+            let p = post[(i * ly + j) as usize];
+            if p >= MIN_SPARSE_PROB {
+                entries.push((p, j));
                 offset += 1;
             }
         }
@@ -140,18 +143,7 @@ pub fn my_sparse_mx_from_post(mx: &mut MySparseMx, post: &[f32], lx: uint, ly: u
 
     mx.vec_size = offset;
     my_sparse_mx_alloc_vec(mx, mx.vec_size);
-
-    offset = 0;
-    for i in 0..lx {
-        for j in 0..ly {
-            let p = post[(i * ly + j) as usize];
-            if p >= MIN_SPARSE_PROB {
-                mx.value_vec[offset as usize] = (p, j);
-                offset += 1;
-            }
-        }
-    }
-    assert!(offset == mx.vec_size);
+    mx.value_vec[..mx.vec_size as usize].copy_from_slice(&entries);
 }
 
 /// Returns a one-line summary of the sparse matrix dimensions and nnz count.

@@ -14,19 +14,80 @@ pub fn bug_l13() -> String {
         ..SWTester::default()
     };
     let mut out = String::new();
-    if let Some(log) = sw_tester_run_ab(
+    if let Some(log) = sw_tester_run_xab(
         &mut st,
+        "Simple_MASM_Mega",
         "EVRDYIQ",
         "RQGEG",
+        true,
         |s, lo_a, lo_b, path| s_wer_simple_masm_mega_sw(s, gap_open, gap_ext, lo_a, lo_b, path),
-        |s, lo_a, lo_b, path| {
-            s_wer_fast_seqs_aa_blosum62_sw(s, gap_open, gap_ext, lo_a, lo_b, path)
+        |lo_a, lo_b, path, _trace| {
+            let rows_a = split("EVRDYIQ", '|');
+            let ma = make_masm_rows(&rows_a, gap_open, gap_ext);
+            let pb = make_mega_profile("RQGEG");
+            let mut ps = PathScorerMASMMega::default();
+            path_scorer_masm_mega_init(&mut ps, &ma, &pb);
+            path_scorer_get_local_score(7, 5, lo_a, lo_b, path, |from, to, pa, pb| {
+                path_scorer_get_score(
+                    from,
+                    to,
+                    pa,
+                    pb,
+                    |pa, pb| path_scorer_masm_mega_get_match_score(&ps, pa, pb),
+                    |pa, pb| path_scorer_masm_mega_get_score_mm(&ps, pa, pb),
+                    |pa, pb| path_scorer_masm_mega_get_score_md(&ps, pa, pb),
+                    |pa, pb| path_scorer_masm_mega_get_score_mi(&ps, pa, pb),
+                    |pa, pb| path_scorer_masm_mega_get_score_dm(&ps, pa, pb),
+                    |pa, pb| path_scorer_masm_mega_get_score_dd(&ps, pa, pb),
+                    |pa, pb| path_scorer_masm_mega_get_score_im(&ps, pa, pb),
+                    |pa, pb| path_scorer_masm_mega_get_score_ii(&ps, pa, pb),
+                )
+            })
         },
-        |_lo_a, _lo_b, _path| 0.0,
     ) {
         out.push_str(&log);
     }
-    out.push_str(&sw_tester_stats(&st));
+    let ps = PathScorerAABLOSUM62 {
+        gap_open,
+        gap_ext,
+        seq_a: "EVRDYIQ".to_string(),
+        seq_b: "RQGEG".to_string(),
+        base: PathScorer {
+            la: 7,
+            lb: 5,
+            ..PathScorer::default()
+        },
+    };
+    if let Some(log) = sw_tester_run_xab(
+        &mut st,
+        "Fast_Seqs_AA_BLOSUM62",
+        "EVRDYIQ",
+        "RQGEG",
+        true,
+        |s, lo_a, lo_b, path| {
+            s_wer_fast_seqs_aa_blosum62_sw(s, gap_open, gap_ext, lo_a, lo_b, path)
+        },
+        |lo_a, lo_b, path, _trace| {
+            path_scorer_get_local_score(7, 5, lo_a, lo_b, path, |from, to, pa, pb| {
+                path_scorer_get_score(
+                    from,
+                    to,
+                    pa,
+                    pb,
+                    |pa, pb| path_scorer_aa_blosum62_get_match_score(&ps, pa, pb),
+                    |pa, pb| path_scorer_aa_blosum62_get_score_mm(&ps, pa, pb),
+                    |pa, pb| path_scorer_aa_blosum62_get_score_md(&ps, pa, pb),
+                    |pa, pb| path_scorer_aa_blosum62_get_score_mi(&ps, pa, pb),
+                    |pa, pb| path_scorer_aa_blosum62_get_score_dm(&ps, pa, pb),
+                    |pa, pb| path_scorer_aa_blosum62_get_score_dd(&ps, pa, pb),
+                    |pa, pb| path_scorer_aa_blosum62_get_score_im(&ps, pa, pb),
+                    |pa, pb| path_scorer_aa_blosum62_get_score_ii(&ps, pa, pb),
+                )
+            })
+        },
+    ) {
+        out.push_str(&log);
+    }
     out
 }
 
@@ -58,6 +119,8 @@ pub fn cmd_swtest() -> String {
         ..PathScorerAABLOSUM62::default()
     };
     let mut out = String::new();
+    sw_tester_set_x_name(&mut st, "Fast_Seqs_AA_BLOSUM62");
+    sw_tester_set_y_name(&mut st, "PS");
     if let Some(log) = sw_tester_run_ab(
         &mut st,
         "SEQV",

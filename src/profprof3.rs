@@ -62,6 +62,10 @@ where
     let mut prof2 = Profile3::default();
     profile3_from_msa(&mut prof1, &msa1, &subst_mx_letter, gap_open, &seq_weights1);
     profile3_from_msa(&mut prof2, &msa2, &subst_mx_letter, gap_open, &seq_weights2);
+    log("_____________ Prof1 ________________________\n");
+    log(&profile3_log_me(&prof1, Some(&msa1)));
+    log("_____________ Prof2 ________________________\n");
+    log(&profile3_log_me(&prof2, Some(&msa2)));
     profile3_validate(&prof1);
     profile3_validate(&prof2);
     profile3_to_tsv_l249(&prof1, output1_file_name);
@@ -102,6 +106,8 @@ where
     };
     log.push_str(&format!("Score={score_s}\n"));
     log.push_str(&format!("Path={path}\n"));
+    crate::log(&format!("Score={score_s}\n"));
+    crate::log(&format!("Path={path}\n"));
 
     let mut msa12 = MultiSequence::default();
     align_two_ms_as_given_path(&msa1, &msa2, &path, &mut msa12);
@@ -115,17 +121,24 @@ where
         gap_open,
         &seq_weights12,
     );
+    crate::log("\n______________________ Prof12Msa _________________________\n");
+    crate::log(&profile3_log_me(&prof12_msa, Some(&msa12)));
     profile3_to_tsv_l249(&prof12_msa, output4_file_name);
     profile3_validate(&prof12_msa);
 
     let prof12_path =
         align_two_profs_given_path(&prof1, 0.5, &prof2, 0.5, &subst_mx_letter, gap_open, &path);
     profile3_to_tsv_l249(&prof12_path, output3_file_name);
+    crate::log("\n______________________ Prof12Path _________________________\n");
+    crate::log(&profile3_log_me(&prof12_path, Some(&msa12)));
     profile3_validate(&prof12_path);
 
     let (diff_count, diff_log) = profile3_log_diffs(&prof12_msa, &prof12_path);
     log.push_str(&diff_log);
     log.push_str(&format!("{diff_count} diffs\n"));
+    crate::log(&diff_log);
+    progress_log(&format!("{diff_count} diffs\n"));
+    profile3_to_tsv_l249(&prof12_path, "prof5.tsv");
     (
         msa12,
         prof1,

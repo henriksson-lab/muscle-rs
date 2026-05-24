@@ -3,7 +3,7 @@
 use crate::*;
 
 /// Extracts MUSTANG core columns: upper-cases fully-aligned columns, lower-
-/// cases inserts, squeezes out the inserts, and emits 60-wide FASTA output.
+/// cases inserts, squeezes out the inserts, and emits 80-wide FASTA output.
 #[track_caller]
 pub fn cmd_mustang_core(input_file_name: &str, output_file_name: &str) -> String {
     const MINCORECOLS: uint = 10;
@@ -47,7 +47,7 @@ pub fn cmd_mustang_core(input_file_name: &str, output_file_name: &str) -> String
     let new_col_count = multi_sequence_get_col_count(&out_msa) as usize;
 
     if aligned_col_count < MINCORECOLS {
-        return format!("WARNING: {aligned_col_count} aligned cols < {MINCORECOLS}\n");
+        return warning(&format!("{aligned_col_count} aligned cols < {MINCORECOLS}"));
     }
 
     let mut out = String::new();
@@ -61,7 +61,7 @@ pub fn cmd_mustang_core(input_file_name: &str, output_file_name: &str) -> String
         out.push('\n');
         let mut n = 0usize;
         while n < new_col_count {
-            let end = std::cmp::min(n + 60, new_col_count);
+            let end = std::cmp::min(n + 80, new_col_count);
             for col in n..end {
                 out.push(seq.char_vec[col]);
             }

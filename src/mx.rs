@@ -33,6 +33,13 @@ pub(crate) static MX_BASE_COUNTS: std::sync::Mutex<MxBaseCounts> =
         max_bytes: 0.0,
     });
 
+fn mx_base_total_bytes(row_count: uint, col_count: uint) -> f64 {
+    let row_ptr_bytes = std::mem::size_of::<*const f32>() as f64 * f64::from(row_count);
+    let data_bytes =
+        std::mem::size_of::<f32>() as f64 * f64::from(row_count) * f64::from(col_count);
+    row_ptr_bytes + data_bytes
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Mx {
     pub name: String,
@@ -40,6 +47,202 @@ pub struct Mx {
     pub col_count: uint,
     pub data: Vec<Vec<f32>>,
 } // original: Mx (muscle/src/mx.h)
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CppMxBase {
+    pub name: String,
+    pub row_count: uint,
+    pub col_count: uint,
+    pub allocated_row_count: uint,
+    pub allocated_col_count: uint,
+}
+
+pub trait CppMxBaseVirtual {
+    fn cpp_base(&self) -> &CppMxBase;
+    fn cpp_base_mut(&mut self) -> &mut CppMxBase;
+    fn cpp_get_total_bytes(&self) -> uint;
+    fn cpp_alloc_data(&mut self, row_count: uint, col_count: uint);
+    fn cpp_free_data(&mut self);
+}
+
+pub struct CppMxRaw {
+    pub base: CppMxBase,
+    type_size: uint,
+    buffer: Option<MyAllocRaw>,
+}
+
+impl CppMxRaw {
+    #[track_caller]
+    pub fn new(type_size: uint) -> Self {
+        assert!(type_size > 0);
+        Self {
+            base: CppMxBase::default(),
+            type_size,
+            buffer: None,
+        }
+    }
+
+    #[track_caller]
+    pub fn type_size(&self) -> uint {
+        self.type_size
+    }
+
+    #[track_caller]
+    pub fn raw_buffer_len(&self) -> usize {
+        self.buffer.as_ref().map(MyAllocRaw::len).unwrap_or(0)
+    }
+
+    #[track_caller]
+    pub fn row_ptr_bytes(&self) -> usize {
+        std::mem::size_of::<*mut byte>() * self.base.allocated_row_count as usize
+    }
+
+    #[track_caller]
+    pub fn row_ptr_value(&self, row: uint) -> *mut byte {
+        assert!(row < self.base.allocated_row_count);
+        let Some(buffer) = &self.buffer else {
+            panic!("CppMxRaw row pointer requested before allocation");
+        };
+        unsafe { *buffer.as_ptr().cast::<*mut byte>().add(row as usize) }
+    }
+
+    #[track_caller]
+    pub fn cell_ptr(&mut self, row: uint, col: uint) -> *mut byte {
+        assert!(row < self.base.row_count);
+        assert!(col < self.base.col_count);
+        let row_ptr = self.row_ptr_value(row);
+        unsafe { row_ptr.add(col as usize * self.type_size as usize) }
+    }
+
+    #[track_caller]
+    pub fn cell_offset(&self, row: uint, col: uint) -> usize {
+        assert!(row < self.base.allocated_row_count);
+        assert!(col < self.base.allocated_col_count);
+        self.row_ptr_bytes()
+            + row as usize * self.base.allocated_col_count as usize * self.type_size as usize
+            + col as usize * self.type_size as usize
+    }
+}
+
+impl Default for CppMxRaw {
+    fn default() -> Self {
+        Self::new(std::mem::size_of::<f32>() as uint)
+    }
+}
+
+impl CppMxBaseVirtual for CppMxRaw {
+    fn cpp_base(&self) -> &CppMxBase {
+        &self.base
+    }
+
+    fn cpp_base_mut(&mut self) -> &mut CppMxBase {
+        &mut self.base
+    }
+
+    fn cpp_get_total_bytes(&self) -> uint {
+        self.base
+            .allocated_row_count
+            .wrapping_mul(self.base.allocated_col_count)
+            .wrapping_mul(self.type_size)
+            .wrapping_add(
+                self.base
+                    .allocated_row_count
+                    .wrapping_mul(std::mem::size_of::<*mut byte>() as uint),
+            )
+    }
+
+    fn cpp_alloc_data(&mut self, row_count: uint, col_count: uint) {
+        let row_ptr_bytes = std::mem::size_of::<*mut byte>() as f64 * f64::from(row_count);
+        if row_ptr_bytes > f64::from(uint::MAX - 16) {
+            die(&format!(
+                "Mx::AllocData Rows={}, sizeof(T *)={}, row {} bytes too big",
+                row_count,
+                std::mem::size_of::<*mut byte>(),
+                mem_bytes_to_str(row_ptr_bytes)
+            ));
+        }
+
+        let data_bytes = f64::from(self.type_size) * f64::from(row_count) * f64::from(col_count);
+        if data_bytes > f64::from(uint::MAX - 16) {
+            die(&format!(
+                "Mx::AllocData Rows={}, Cols={}, sizeof(T)={}, data {} bytes too big",
+                row_count,
+                col_count,
+                self.type_size,
+                mem_bytes_to_str(data_bytes)
+            ));
+        }
+
+        let row_bytes = std::mem::size_of::<*mut byte>() * row_count as usize;
+        let data_bytes = self.type_size as usize * row_count as usize * col_count as usize;
+        let mut buffer = myalloc_(1, row_bytes.wrapping_add(data_bytes));
+        let base = unsafe { buffer.as_mut_ptr().add(row_bytes) };
+        for i in 0..row_count as usize {
+            let row_ptr = unsafe { base.add(i * col_count as usize * self.type_size as usize) };
+            unsafe {
+                *buffer.as_mut_ptr().cast::<*mut byte>().add(i) = row_ptr;
+            }
+        }
+        self.buffer = Some(buffer);
+        self.base.allocated_row_count = row_count;
+        self.base.allocated_col_count = col_count;
+    }
+
+    fn cpp_free_data(&mut self) {
+        self.buffer = None;
+        self.base.row_count = 0;
+        self.base.col_count = 0;
+        self.base.allocated_row_count = 0;
+        self.base.allocated_col_count = 0;
+    }
+}
+
+#[track_caller]
+pub fn cpp_mx_base_alloc<M: CppMxBaseVirtual>(
+    mx: &mut M,
+    row_count: uint,
+    col_count: uint,
+    name: &str,
+) {
+    mx.cpp_base_mut().name = name.to_string();
+    let mut counts = MX_BASE_COUNTS.lock().unwrap();
+    counts.alloc_count += 1;
+    if mx.cpp_base().allocated_row_count == 0 {
+        counts.zero_alloc_count += 1;
+    }
+
+    if row_count > mx.cpp_base().allocated_row_count
+        || col_count > mx.cpp_base().allocated_col_count
+    {
+        if mx.cpp_base().allocated_row_count > 0 {
+            counts.grow_alloc_count += 1;
+        }
+        counts.total_bytes -= f64::from(mx.cpp_get_total_bytes());
+        mx.cpp_free_data();
+
+        let n = std::cmp::max(
+            row_count.wrapping_add(16),
+            mx.cpp_base().allocated_row_count,
+        );
+        let m = std::cmp::max(
+            col_count.wrapping_add(16),
+            mx.cpp_base().allocated_col_count,
+        );
+        mx.cpp_alloc_data(n, m);
+
+        counts.total_bytes += f64::from(mx.cpp_get_total_bytes());
+        if counts.total_bytes > counts.max_bytes {
+            counts.max_bytes = counts.total_bytes;
+        }
+    }
+
+    mx.cpp_base_mut().name = name.to_string();
+    assert!(row_count <= mx.cpp_base().allocated_row_count);
+    assert!(col_count <= mx.cpp_base().allocated_col_count);
+    let base = mx.cpp_base_mut();
+    base.row_count = row_count;
+    base.col_count = col_count;
+}
 
 /// Parses `s` as a float, takes its natural log, and formats the result for matrix display.
 pub fn logize_str(s: &str) -> String {
@@ -167,16 +370,14 @@ pub fn mx_base_alloc(mx: &mut MxBase, row_count: uint, col_count: uint, name: &s
         if mx.allocated_row_count > 0 {
             counts.grow_alloc_count += 1;
         }
-        let old_bytes = f64::from(mx.allocated_row_count)
-            * f64::from(mx.allocated_col_count)
-            * std::mem::size_of::<f32>() as f64;
+        let old_bytes = mx_base_total_bytes(mx.allocated_row_count, mx.allocated_col_count);
         counts.total_bytes -= old_bytes;
         let n = std::cmp::max(row_count + 16, mx.allocated_row_count);
         let m = std::cmp::max(col_count + 16, mx.allocated_col_count);
         mx.data = vec![vec![0.0; m as usize]; n as usize];
         mx.allocated_row_count = n;
         mx.allocated_col_count = m;
-        let new_bytes = f64::from(n) * f64::from(m) * std::mem::size_of::<f32>() as f64;
+        let new_bytes = mx_base_total_bytes(n, m);
         counts.total_bytes += new_bytes;
         if counts.total_bytes > counts.max_bytes {
             counts.max_bytes = counts.total_bytes;
@@ -248,10 +449,16 @@ pub fn mx_base_log_me(mx: &MxBase, with_data: bool, opts: i32) -> String {
         out.push_str("Log ");
     }
     out.push_str(&format!(
-        "{} Rows {}/{}, Cols {}/{}\n",
-        mx.name, mx.row_count, mx.allocated_row_count, mx.col_count, mx.allocated_col_count
+        "{}({:p}) Rows {}/{}, Cols {}/{}\n",
+        mx.name,
+        mx as *const MxBase,
+        mx.row_count,
+        mx.allocated_row_count,
+        mx.col_count,
+        mx.allocated_col_count
     ));
     if !with_data || mx.row_count == 0 || mx.col_count == 0 {
+        log(&out);
         return out;
     }
 
@@ -281,6 +488,7 @@ pub fn mx_base_log_me(mx: &MxBase, with_data: bool, opts: i32) -> String {
         }
         out.push('\n');
     }
+    log(&out);
     out
 }
 
@@ -304,5 +512,6 @@ pub fn mx_base_log_counts() -> String {
         " Max bytes  {:>10.10}\n",
         mem_bytes_to_str(counts.max_bytes)
     ));
+    log(&out);
     out
 }

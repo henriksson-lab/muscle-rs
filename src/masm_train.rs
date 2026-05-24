@@ -19,6 +19,7 @@ pub fn cmd_masm_stats(file_name: &str) -> String {
         ));
     }
     out.push('\n');
+    let _ = progress_log(&out);
     out
 }
 

@@ -370,6 +370,7 @@ pub fn cmd_sw(input_file_name: &str) -> String {
         let label_i = seq_i.label.clone();
         for j in (i + 1)..seq_count {
             assert!(pair_idx < pair_count);
+            let _ = progress_step(pair_idx, pair_count, "Aligning");
             pair_idx += 1;
 
             let seq_j = &input.seqs[j as usize];

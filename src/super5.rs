@@ -2,7 +2,7 @@
 #[allow(unused_imports)]
 use crate::*;
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Super5 {
     pub min_ea_pass1: f32,
     pub input_seqs: Option<MultiSequence>,
@@ -41,6 +41,49 @@ pub struct Super5 {
     pub dupe_rep_gsi_to_member_gs_is: Vec<Vec<uint>>,
     pub gsi_to_member_centroid_path: Vec<String>,
 } // original: Super5 (muscle/src/super5.h)
+
+impl Default for Super5 {
+    fn default() -> Self {
+        Self {
+            min_ea_pass1: 0.99,
+            input_seqs: None,
+            unique_seqs: None,
+            centroid_seqs: None,
+            centroid_msa: None,
+            extended_msa: None,
+            final_msa: None,
+            guide_tree_none: Tree::default(),
+            guide_tree_abc: Tree::default(),
+            guide_tree_acb: Tree::default(),
+            guide_tree_bca: Tree::default(),
+            final_msa_none: MultiSequence::default(),
+            final_msa_abc: MultiSequence::default(),
+            final_msa_acb: MultiSequence::default(),
+            final_msa_bca: MultiSequence::default(),
+            d: Derep::default(),
+            u: UClust::default(),
+            ta: TransAln::default(),
+            s4: Super4::default(),
+            is_dupe: Vec::new(),
+            is_centroid: Vec::new(),
+            is_member: Vec::new(),
+            dupe_gs_is: Vec::new(),
+            dupe_rep_gs_is: Vec::new(),
+            centroid_gs_is: Vec::new(),
+            member_gs_is: Vec::new(),
+            member_centroid_gs_is: Vec::new(),
+            centroid_seqs_seq_index_to_gsi: Vec::new(),
+            centroid_msa_seq_index_to_gsi: Vec::new(),
+            gsi_to_centroid_seqs_seq_index: Vec::new(),
+            gsi_to_centroid_msa_seq_index: Vec::new(),
+            gsi_to_member_count: Vec::new(),
+            gsi_to_centroid_gsi: Vec::new(),
+            centroid_gsi_to_member_gs_is: Vec::new(),
+            dupe_rep_gsi_to_member_gs_is: Vec::new(),
+            gsi_to_member_centroid_path: Vec::new(),
+        }
+    }
+}
 
 /// Convert a byte vector of ASCII characters into a `String`.
 pub fn char_vec_to_str(vec: &[byte]) -> String {
@@ -479,6 +522,7 @@ pub fn super5_log_clusters(s5: &Super5) -> String {
 
         out.push('\n');
     }
+    log(&out);
     out
 }
 
@@ -587,7 +631,7 @@ pub fn super5_align_dupes(s5: &mut Super5) -> String {
     }
 
     let mut out = String::new();
-    out.push_str(&format!("Inserting {dupe_count} dupes..."));
+    out.push_str(&progress_log(&format!("Inserting {dupe_count} dupes...")));
     let gsi_count = get_gsi_count();
     let mut gsi_to_extended_seq_index = vec![uint::MAX; gsi_count as usize];
     let extended_msa = s5
@@ -615,7 +659,7 @@ pub fn super5_align_dupes(s5: &mut Super5) -> String {
         extended_msa.seqs.push(aligned_dupe);
         extended_msa.owners.push(true);
     }
-    out.push_str(" done.\n");
+    out.push_str(&progress_log(" done.\n"));
     assert_seqs_eq_input("super5.cpp", 425, extended_msa);
     out
 }
@@ -641,9 +685,11 @@ pub fn super5_get_label_to_aln_seq_index(
 /// Sort the MSA rows by input order or guide-tree order.
 #[track_caller]
 pub fn super5_sort_msa(s5: &Super5, aln: &mut MultiSequence, input_order: bool) {
+    set_cmd_opt_used("input_order");
     if input_order {
         super5_sort_msa_by_input_order(s5, aln);
     } else {
+        set_cmd_opt_used("tree_order");
         super5_sort_msa_by_guide_tree(s5, aln);
     }
 }

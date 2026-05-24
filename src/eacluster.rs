@@ -157,6 +157,151 @@ where
     best_centroid_index
 }
 
+/// C++-literal test sidecar for `EACluster::GetBestCentroid`.
+///
+/// The public helper scans deterministically. This sidecar replays an explicit
+/// OpenMP lock-acquisition order over `TopSeqIndexes`, including the shared
+/// `Done` checks that can skip later candidates.
+#[track_caller]
+pub fn ea_cluster_get_best_centroid_cpp_literal_with_top_schedule<FAlignSeqPair>(
+    ec: &EACluster,
+    seq_index: uint,
+    min_ea: f32,
+    best_ea: &mut f32,
+    top_index_schedule: &[uint],
+    mut align_seq_pair: FAlignSeqPair,
+) -> uint
+where
+    FAlignSeqPair: FnMut(&str, &str) -> f32,
+{
+    let centroid_count = ec.centroid_seq_indexes.len() as uint;
+    if centroid_count == 0 {
+        return uint::MAX;
+    }
+
+    let input_seqs = ec
+        .input_seqs
+        .as_ref()
+        .expect("EACluster input seqs not set");
+    let byte_seq = sequence_get_seq_as_string(&input_seqs.seqs[seq_index as usize]).into_bytes();
+    let (top_seq_indexes, top_word_counts) = u_sorter_search_seq(&ec.us, &byte_seq);
+    let top_count = top_seq_indexes.len();
+    assert_eq!(top_word_counts.len(), top_count);
+    if top_count == 0 {
+        return uint::MAX;
+    }
+
+    let mut top_done = vec![false; top_count];
+    let mut order = Vec::with_capacity(top_count);
+    for &top_index in top_index_schedule {
+        if (top_index as usize) < top_count && !top_done[top_index as usize] {
+            top_done[top_index as usize] = true;
+            order.push(top_index as usize);
+        }
+    }
+    for top_index in 0..top_count {
+        if !top_done[top_index] {
+            order.push(top_index);
+        }
+    }
+
+    *best_ea = 0.0;
+    let mut best_centroid_index = uint::MAX;
+    let mut done = false;
+    for top_index in order {
+        if done {
+            continue;
+        }
+        let top_seq_index = top_seq_indexes[top_index];
+        let label = &input_seqs.seqs[seq_index as usize].label;
+        let top_label = &input_seqs.seqs[top_seq_index as usize].label;
+        let ea = align_seq_pair(label, top_label);
+        if ea > min_ea && ea > *best_ea {
+            *best_ea = ea;
+            assert!((top_seq_index as usize) < ec.seq_index_to_centroid_index.len());
+            let centroid_index = ec.seq_index_to_centroid_index[top_seq_index as usize];
+            assert!(centroid_index < centroid_count);
+            best_centroid_index = centroid_index;
+        }
+        if *best_ea >= min_ea {
+            if *best_ea > 0.9 {
+                done = true;
+            }
+            if *best_ea - ea > 0.3 {
+                done = true;
+            }
+        }
+        if *best_ea < min_ea - 0.3 && top_index > 20 {
+            done = true;
+        }
+    }
+    best_centroid_index
+}
+
+/// C++-literal test sidecar for `EACluster::Run`.
+#[track_caller]
+pub fn ea_cluster_run_cpp_literal_with_top_schedules<FAlignSeqPair>(
+    ec: &mut EACluster,
+    input_seqs: &MultiSequence,
+    min_ea: f32,
+    top_index_schedules: &[Vec<uint>],
+    mut align_seq_pair: FAlignSeqPair,
+) where
+    FAlignSeqPair: FnMut(&str, &str) -> f32,
+{
+    assert_same_labels("eacluster.cpp", 40, input_seqs);
+    ea_cluster_clear(ec);
+    u_sorter_init(&mut ec.us);
+    ec.input_seqs = Some(input_seqs.clone());
+    let input_seq_count = input_seqs.seqs.len() as uint;
+    assert!(input_seq_count > 0);
+    ec.seq_index_to_centroid_index = vec![uint::MAX; input_seq_count as usize];
+    let min_ee = 1.0 - min_ea;
+    let mut cluster_count = 0_u32;
+    let mut member_count = 0_u32;
+    for seq_index in 0..input_seq_count {
+        let _ = progress_step(
+            seq_index,
+            input_seq_count,
+            &format!(
+                "UCLUST {input_seq_count} seqs EE<{min_ee:.2}, {cluster_count} centroids, {member_count} members"
+            ),
+        );
+        let mut best_ea = 0.0;
+        let empty_schedule = Vec::new();
+        let schedule = top_index_schedules
+            .get(seq_index as usize)
+            .unwrap_or(&empty_schedule);
+        let centroid_index = ea_cluster_get_best_centroid_cpp_literal_with_top_schedule(
+            ec,
+            seq_index,
+            min_ea,
+            &mut best_ea,
+            schedule,
+            |label1, label2| align_seq_pair(label1, label2),
+        );
+        ec.seq_index_to_centroid_index[seq_index as usize] = centroid_index;
+        if centroid_index == uint::MAX {
+            let cluster_index = cluster_count;
+            cluster_count += 1;
+            ec.seq_index_to_centroid_index[seq_index as usize] = cluster_index;
+            ec.centroid_seq_indexes.push(seq_index);
+            ec.centroid_index_to_seq_indexes.push(vec![seq_index]);
+
+            let byte_seq =
+                sequence_get_seq_as_string(&input_seqs.seqs[seq_index as usize]).into_bytes();
+            u_sorter_add_seq(&mut ec.us, &byte_seq, seq_index);
+        } else {
+            member_count += 1;
+            assert!((centroid_index as usize) < ec.centroid_index_to_seq_indexes.len());
+            assert!((centroid_index as usize) < ec.centroid_seq_indexes.len());
+            ec.centroid_index_to_seq_indexes[centroid_index as usize].push(seq_index);
+        }
+        ea_cluster_validate(ec);
+    }
+    ea_cluster_make_cluster_mf_as(ec);
+}
+
 /// Return a copy of all per-cluster MFAs computed by `ea_cluster_make_cluster_mf_as`.
 #[track_caller]
 pub fn ea_cluster_get_cluster_mf_as(ec: &EACluster) -> Vec<MultiSequence> {
@@ -164,6 +309,7 @@ pub fn ea_cluster_get_cluster_mf_as(ec: &EACluster) -> Vec<MultiSequence> {
     let mut mfas = Vec::new();
     for i in 0..n {
         let cluster_mfa = ec.cluster_mfas[i].clone();
+        assert_same_labels("eacluster.cpp", 153, &cluster_mfa);
         mfas.push(cluster_mfa);
     }
     mfas
@@ -218,6 +364,7 @@ pub fn ea_cluster_make_cluster_mf_as(ec: &mut EACluster) {
             cluster_mfa.seqs.push(seq);
             cluster_mfa.owners.push(false);
         }
+        assert_same_labels("eacluster.cpp", 195, &cluster_mfa);
         ec.cluster_mfas.push(cluster_mfa);
     }
     let refs = ec.cluster_mfas.iter().collect::<Vec<_>>();
@@ -227,6 +374,8 @@ pub fn ea_cluster_make_cluster_mf_as(ec: &mut EACluster) {
 /// Default pairwise scorer: align the two labelled sequences with the flat aligner and return the EA score.
 #[track_caller]
 pub fn ea_cluster_align_seq_pair(label1: &str, label2: &str) -> f32 {
+    let _seq1 = get_sequence_by_global_label(label1);
+    let _seq2 = get_sequence_by_global_label(label2);
     let (ea, _path) = align_pair_flat(label1, label2);
     ea
 }
@@ -263,15 +412,14 @@ pub fn cmd_eacluster<FAlignSeqPair>(
     input_file_name: &str,
     min_ea: f32,
     output_file_name_pattern: &str,
+    force_nucleo: Option<bool>,
     mut align_seq_pair: FAlignSeqPair,
 ) -> (EACluster, Vec<String>)
 where
     FAlignSeqPair: FnMut(&str, &str) -> f32,
 {
-    let mut input_seqs = MultiSequence::default();
-    multi_sequence_load_mfa_l8(&mut input_seqs, input_file_name, true);
-    set_global_input_ms(&input_seqs);
-    let is_nucleo = multi_sequence_guess_is_nucleo(&input_seqs);
+    let input_seqs = load_input(input_file_name, false);
+    let is_nucleo = force_nucleo.unwrap_or_else(|| multi_sequence_guess_is_nucleo(&input_seqs));
     if is_nucleo {
         set_alpha_l209(ALPHA::ALPHA_Nucleo);
     } else {
@@ -283,6 +431,40 @@ where
     ea_cluster_run(&mut ec, &input_seqs, min_ea, |label1, label2| {
         align_seq_pair(label1, label2)
     });
+    let file_names = ea_cluster_write_mf_as(&ec, output_file_name_pattern);
+    (ec, file_names)
+}
+
+/// C++-literal test sidecar for `cmd_eacluster`.
+#[track_caller]
+pub fn cmd_eacluster_cpp_literal_with_top_schedules<FAlignSeqPair>(
+    input_file_name: &str,
+    min_ea: f32,
+    output_file_name_pattern: &str,
+    force_nucleo: Option<bool>,
+    top_index_schedules: &[Vec<uint>],
+    mut align_seq_pair: FAlignSeqPair,
+) -> (EACluster, Vec<String>)
+where
+    FAlignSeqPair: FnMut(&str, &str) -> f32,
+{
+    let input_seqs = load_input(input_file_name, false);
+    let is_nucleo = force_nucleo.unwrap_or_else(|| multi_sequence_guess_is_nucleo(&input_seqs));
+    if is_nucleo {
+        set_alpha_l209(ALPHA::ALPHA_Nucleo);
+    } else {
+        set_alpha_l209(ALPHA::ALPHA_Amino);
+    }
+    init_probcons();
+
+    let mut ec = EACluster::default();
+    ea_cluster_run_cpp_literal_with_top_schedules(
+        &mut ec,
+        &input_seqs,
+        min_ea,
+        top_index_schedules,
+        |label1, label2| align_seq_pair(label1, label2),
+    );
     let file_names = ea_cluster_write_mf_as(&ec, output_file_name_pattern);
     (ec, file_names)
 }

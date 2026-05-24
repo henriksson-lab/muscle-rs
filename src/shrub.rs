@@ -5,9 +5,16 @@ use crate::*;
 /// Return shrub LCAs: non-overlapping subtrees covering the whole tree with at most `n` leaves each.
 #[track_caller]
 pub fn get_shrubs(t: &Tree, n: uint) -> Vec<uint> {
+    let mut shrub_lcas = Vec::new();
+    get_shrubs_into(t, n, &mut shrub_lcas);
+    shrub_lcas
+}
+
+/// Append shrub LCAs to caller-owned storage, matching C++ `GetShrubs`.
+#[track_caller]
+pub fn get_shrubs_into(t: &Tree, n: uint, shrub_lcas: &mut Vec<uint>) {
     let sizes = tree_get_subtree_sizes(t);
 
-    let mut shrub_lcas = Vec::new();
     let mut shrub_leaf_count = 0;
     let node_count = t.node_count;
     let leaf_count = if t.rooted {
@@ -38,7 +45,6 @@ pub fn get_shrubs(t: &Tree, n: uint) -> Vec<uint> {
         }
     }
     assert!(shrub_leaf_count == leaf_count);
-    shrub_lcas
 }
 
 /// `shrub` command: partition a tree into shrubs of at most `n` leaves and print pruned-tree pairings.
@@ -46,7 +52,12 @@ pub fn get_shrubs(t: &Tree, n: uint) -> Vec<uint> {
 pub fn cmd_shrub(input_file_name: &str, n: Option<uint>) -> (Vec<uint>, Tree, String) {
     let mut t = Tree::default();
     tree_from_file_l143(&mut t, input_file_name);
-    let mut out = tree_log_me(&t);
+    let mut out = String::new();
+    let mut emit = |s: &str| {
+        log(s);
+        out.push_str(s);
+    };
+    emit(&tree_log_me(&t));
     assert!(t.rooted);
 
     let shrub_lcas = get_shrubs(&t, n.unwrap_or(32));
@@ -54,16 +65,16 @@ pub fn cmd_shrub(input_file_name: &str, n: Option<uint>) -> (Vec<uint>, Tree, St
     for i in 0..shrub_count {
         let lca = shrub_lcas[i as usize];
         let labels = tree_get_subtree_leaf_labels(&t, lca);
-        out.push_str(&format!("[{i:4}] {:3} ", labels.len()));
+        emit(&format!("[{i:4}] {:3} ", labels.len()));
         for label in &labels {
-            out.push_str(&format!(" {label}"));
+            emit(&format!(" {label}"));
         }
-        out.push('\n');
+        emit("\n");
     }
 
     let mut pt = Tree::default();
     let _shrub_labels = tree_prune_tree(&mut pt, &t, &shrub_lcas, "Shrub_");
-    out.push_str(&tree_log_me(&pt));
+    emit(&tree_log_me(&pt));
 
     let mut node = tree_first_depth_first_node(&pt);
     loop {
@@ -77,7 +88,7 @@ pub fn cmd_shrub(input_file_name: &str, n: Option<uint>) -> (Vec<uint>, Tree, St
             let right = pt.neighbor3[i];
             let left_labels = tree_get_subtree_leaf_labels(&pt, left);
             let right_labels = tree_get_subtree_leaf_labels(&pt, right);
-            out.push('[');
+            emit("[");
             let mut first = true;
             for left_label in &left_labels {
                 let l = if let Some(suffix) = left_label.strip_prefix("Shrub_") {
@@ -91,12 +102,12 @@ pub fn cmd_shrub(input_file_name: &str, n: Option<uint>) -> (Vec<uint>, Tree, St
                     if first {
                         first = false;
                     } else {
-                        out.push('+');
+                        emit("+");
                     }
-                    out.push_str(label);
+                    emit(label);
                 }
             }
-            out.push_str("] [");
+            emit("] [");
             for right_label in &right_labels {
                 let l = if let Some(suffix) = right_label.strip_prefix("Shrub_") {
                     str_to_uint_l1278(suffix, false)
@@ -109,12 +120,12 @@ pub fn cmd_shrub(input_file_name: &str, n: Option<uint>) -> (Vec<uint>, Tree, St
                     if first {
                         first = false;
                     } else {
-                        out.push('+');
+                        emit("+");
                     }
-                    out.push_str(label);
+                    emit(label);
                 }
             }
-            out.push_str("]\n");
+            emit("]\n");
         }
         node = tree_next_depth_first_node(&pt, node);
         if node == uint::MAX {

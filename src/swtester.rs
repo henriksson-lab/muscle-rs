@@ -2,10 +2,12 @@
 #[allow(unused_imports)]
 use crate::*;
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct SWTester {
     pub x: Option<SWer>,
     pub y: Option<SWer>,
+    pub x_name: String,
+    pub y_name: String,
     pub n: uint,
     pub n_agree: uint,
     pub n_score_diff: uint,
@@ -24,6 +26,76 @@ pub struct SWTester {
     pub x_path: String,
     pub y_path: String,
 } // original: SWTester (muscle/src/swtester.h)
+
+impl Default for SWTester {
+    fn default() -> Self {
+        Self {
+            x: None,
+            y: None,
+            x_name: String::new(),
+            y_name: String::new(),
+            n: 0,
+            n_agree: 0,
+            n_score_diff: 0,
+            n_path_diff: 0,
+            n_pos_diff: 0,
+            n_ps_score_ok: 0,
+            n_ps_score_diff: 0,
+            a: String::new(),
+            b: String::new(),
+            x_score: f32::MAX,
+            y_score: f32::MAX,
+            x_lo_a: uint::MAX,
+            y_lo_a: uint::MAX,
+            x_lo_b: uint::MAX,
+            y_lo_b: uint::MAX,
+            x_path: String::new(),
+            y_path: String::new(),
+        }
+    }
+}
+
+#[track_caller]
+pub fn sw_tester_set_x_name(swt: &mut SWTester, name: &str) {
+    swt.x_name = name.to_string();
+}
+
+#[track_caller]
+pub fn sw_tester_set_y_name(swt: &mut SWTester, name: &str) {
+    swt.y_name = name.to_string();
+}
+
+fn sw_tester_x_name(swt: &SWTester) -> &str {
+    if !swt.x_name.is_empty() {
+        &swt.x_name
+    } else if swt.x.is_some() {
+        "SWer"
+    } else {
+        ""
+    }
+}
+
+fn sw_tester_y_name(swt: &SWTester) -> &str {
+    if !swt.y_name.is_empty() {
+        &swt.y_name
+    } else if swt.y.is_some() {
+        "SWer"
+    } else {
+        ""
+    }
+}
+
+/// Clears only cumulative statistics, matching C++ `SWTester::ClearStats`.
+#[track_caller]
+pub fn sw_tester_clear_stats(swt: &mut SWTester) {
+    swt.n = 0;
+    swt.n_agree = 0;
+    swt.n_score_diff = 0;
+    swt.n_path_diff = 0;
+    swt.n_pos_diff = 0;
+    swt.n_ps_score_ok = 0;
+    swt.n_ps_score_diff = 0;
+}
 
 /// Runs the X aligner on `(a, b)`, records its result, and tallies the path
 /// scorer cross-check.
@@ -125,6 +197,7 @@ where
     FSW: FnMut(&mut SWer, &mut uint, &mut uint, &mut String) -> f32,
     FPS: FnMut(uint, uint, &str, bool) -> f32,
 {
+    sw_tester_set_x_name(swt, x_name);
     sw_tester_run_x(
         swt,
         a,
@@ -251,8 +324,8 @@ pub fn sw_tester_cmp_xy(swt: &mut SWTester) -> Option<String> {
 /// Formats the X/Y mismatch log line tagged with `msg`.
 #[track_caller]
 pub fn sw_tester_log_result(swt: &SWTester, msg: &str) -> String {
-    let x_name = if swt.x.is_some() { "SWer" } else { "" };
-    let y_name = if swt.y.is_some() { "SWer" } else { "" };
+    let x_name = sw_tester_x_name(swt);
+    let y_name = sw_tester_y_name(swt);
     let format_g3 = |d: f32| -> String {
         if d == 0.0 {
             return "0".to_string();
@@ -336,7 +409,8 @@ where
     FPS: FnMut(uint, uint, &str) -> f32,
 {
     let mut out = String::new();
-    for _iter in 0..iters {
+    for iter in 0..iters {
+        let _ = progress_step(iter, iters, "RunRandomSeqsIters");
         if let Some(log) = sw_tester_run_random_seqs(
             swt,
             min_l,
@@ -371,7 +445,8 @@ where
     FPS: FnMut(uint, uint, &str) -> f32,
 {
     let mut out = String::new();
-    for _iter in 0..iters {
+    for iter in 0..iters {
+        let _ = progress_step(iter, iters, "RunRandomMSASeqIters");
         if let Some(log) = sw_tester_run_random_msa_seq(
             swt,
             min_n,
@@ -506,10 +581,10 @@ pub fn sw_tester_stats(swt: &SWTester) -> String {
     let mut out = String::new();
     out.push('\n');
     if swt.x.is_some() {
-        out.push_str(&format!("{:>10.10}  {}\n", "X", "SWer"));
+        out.push_str(&format!("{:>10.10}  {}\n", "X", sw_tester_x_name(swt)));
     }
     if swt.y.is_some() {
-        out.push_str(&format!("{:>10.10}  {}\n", "Y", "SWer"));
+        out.push_str(&format!("{:>10.10}  {}\n", "Y", sw_tester_y_name(swt)));
     }
     out.push_str(&format!("{:10}  Tests\n", swt.n));
     out.push_str(&format!("{:10}  Agree\n", swt.n_agree));

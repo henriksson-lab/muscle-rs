@@ -171,7 +171,6 @@ pub fn align_two_profs_given_path(
                     b'I' => set_dimers_id(ppa, wa, &ppb_prev, wb, &mut ppab),
                     _ => panic!("invalid previous path edge"),
                 }
-                ppa_prev = ppa.clone();
                 pos_a += 1;
             }
             b'I' => {
@@ -183,7 +182,6 @@ pub fn align_two_profs_given_path(
                     b'I' => set_dimers_ii(&ppa_prev, wa, ppb, wb, &mut ppab),
                     _ => panic!("invalid previous path edge"),
                 }
-                ppb_prev = ppb.clone();
                 pos_b += 1;
             }
             _ => panic!("invalid path edge"),

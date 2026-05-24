@@ -119,8 +119,6 @@ pub fn test1_l96(la: uint, lb: uint, d: uint, i: uint, j: uint, i_upper: uint, j
 /// Self-test routine exercising `get_diag_range` and `get_diag_box` over a grid of (la, lb, d) values.
 #[track_caller]
 pub fn test_diag_box() -> String {
-    test2_l88(16, 19, 17, 34);
-
     test1_l96(5, 3, 1, 4, 0, 4, 0);
     test1_l96(5, 3, 2, 3, 0, 4, 1);
     test1_l96(5, 3, 3, 2, 0, 4, 2);

@@ -15,6 +15,8 @@ pub fn align_ms_as_flat_mega(
     let seq_count2 = msa2.seqs.len() as uint;
     assert!(seq_count1 > 0);
     assert!(seq_count2 > 0);
+    assert!(multi_sequence_is_aligned(msa1));
+    assert!(multi_sequence_is_aligned(msa2));
 
     let col_count1 = multi_sequence_get_col_count(msa1);
     let col_count2 = multi_sequence_get_col_count(msa2);

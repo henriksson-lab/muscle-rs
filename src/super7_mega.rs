@@ -94,11 +94,8 @@ where
         let shrub_count = s7m.base.shrub_lcas.len() as uint;
         let mut out = String::new();
         for shrub_index in 0..shrub_count {
-            out.push_str(&format!(
-                "Aligning shrub {} / {}\n",
-                shrub_index + 1,
-                shrub_count
-            ));
+            let msg = format!("Aligning shrub {} / {}\n", shrub_index + 1, shrub_count);
+            out.push_str(&progress_log(&msg));
             super7_mega_intra_align_shrub(s7m, shrub_index, |mpc, shrub_input| {
                 run_mpc(mpc, shrub_input)
             });
@@ -110,10 +107,23 @@ where
     }
 }
 
-/// CLI entry point for the Super7 mega aligner; loads input, builds or
-/// reads the guide tree, runs the pipeline, and writes the MSA.
+/// C++ command entry point parity: `cmd_super7_mega()` begins with
+/// `Die("_mega")`, so the exposed command is disabled even though the
+/// translated pipeline below is kept available for focused tests/helpers.
 #[track_caller]
 pub fn cmd_super7_mega(
+    _input_file_name: &str,
+    _output_file_name: &str,
+    _shrub_size: Option<uint>,
+    _guide_tree_file_name: Option<&str>,
+    _dist_mx_file_name: Option<&str>,
+) -> (Super7Mega, Tree, String) {
+    die("_mega");
+}
+
+/// Translated Super7 mega pipeline body after C++'s disabled command guard.
+#[track_caller]
+pub fn super7_mega_command_body(
     input_file_name: &str,
     output_file_name: &str,
     shrub_size: Option<uint>,
@@ -188,6 +198,8 @@ pub fn cmd_super7_mega(
         },
     );
     multi_sequence_write_mfa(&s7.base.final_msa, output_file_name);
-    log.push_str("Done.\n");
+    let done_msg = "Done.\n";
+    let _ = progress_log(done_msg);
+    log.push_str(done_msg);
     (s7, guide_tree, log)
 }

@@ -309,38 +309,39 @@ pub fn mpc_flat_calc_posteriors(mpc: &mut MPCFlat) {
         return;
     }
 
-    let mut results: Vec<Option<(MySparseMx, f32, uint, uint)>> = vec![None; pair_count as usize];
+    let input_seqs = mpc
+        .my_input_seqs
+        .as_ref()
+        .expect("MPCFlat::CalcPosteriors, no input seqs");
+    let (tx, rx) = std::sync::mpsc::sync_channel(thread_count as usize);
     std::thread::scope(|scope| {
-        let mut handles = Vec::new();
-        let mpc_ref: &MPCFlat = mpc;
         for thread_index in 0..thread_count {
             let start = (pair_count * thread_index) / thread_count;
             let end = (pair_count * (thread_index + 1)) / thread_count;
-            handles.push(scope.spawn(move || {
-                let mut thread_results = Vec::new();
+            let tx = tx.clone();
+            let pairs = &mpc.pairs;
+            scope.spawn(move || {
+                let mut scratch = PosteriorScratch::default();
                 for pair_index in start..end {
-                    thread_results.push((
-                        pair_index,
-                        mpc_flat_calc_posterior_result(mpc_ref, pair_index),
-                    ));
+                    let pair = pairs[pair_index as usize];
+                    let result = mpc_flat_calc_posterior_result_for_pair_with_scratch(
+                        pair,
+                        input_seqs,
+                        &mut scratch,
+                    );
+                    tx.send((pair_index, result)).unwrap();
                 }
-                thread_results
-            }));
+            });
         }
-        for handle in handles {
-            for (pair_index, result) in handle.join().unwrap() {
-                results[pair_index as usize] = Some(result);
-            }
+        drop(tx);
+
+        for _ in 0..pair_count {
+            let (pair_index, (sparse_post, ea, seq_index_x, seq_index_y)) = rx.recv().unwrap();
+            mpc.sparse_posts1[pair_index as usize] = Some(sparse_post);
+            mpc.dist_mx[seq_index_x as usize][seq_index_y as usize] = ea;
+            mpc.dist_mx[seq_index_y as usize][seq_index_x as usize] = ea;
         }
     });
-
-    for pair_index in 0..pair_count {
-        let (sparse_post, ea, seq_index_x, seq_index_y) =
-            results[pair_index as usize].take().unwrap();
-        mpc.sparse_posts1[pair_index as usize] = Some(sparse_post);
-        mpc.dist_mx[seq_index_x as usize][seq_index_y as usize] = ea;
-        mpc.dist_mx[seq_index_y as usize][seq_index_x as usize] = ea;
-    }
 }
 
 /// Run the configured number of randomised refinement iterations.
@@ -357,7 +358,8 @@ pub fn mpc_flat_refine<FRand, FAlignAlns>(
     if seq_count < 3 {
         return;
     }
-    for _iter in 0..mpc.refine_iter_count {
+    for iter in 0..mpc.refine_iter_count {
+        let _ = progress_step(iter, mpc.refine_iter_count, "Refining");
         mpc_flat_refine_iter(mpc, &mut rand_value, &mut align_alns);
     }
 }
@@ -463,9 +465,11 @@ pub fn mpc_flat_run<FCalcPosteriors, FCalcGuideTree, FConsistency, FProgressiveA
 /// Sort the produced MSA either by original input order or by guide-tree leaf order.
 #[track_caller]
 pub fn mpc_flat_sort_msa(mpc: &mut MPCFlat, input_order: bool) {
+    set_cmd_opt_used("input_order");
     if input_order {
         mpc_flat_sort_msa_by_input_order(mpc);
     } else {
+        set_cmd_opt_used("tree_order");
         mpc_flat_sort_msa_by_guide_tree(mpc);
     }
 }

@@ -24,6 +24,7 @@ where
     let pair_count = (seq_count * (seq_count - 1)) / 2;
     let mut seq_indexi = uint::MAX;
     let mut seq_indexj = uint::MAX;
+    let mut pair_counter: uint = 0;
     for _pair_index in 0..pair_count {
         if seq_indexi == uint::MAX {
             seq_indexi = 1;
@@ -35,6 +36,9 @@ where
                 seq_indexj = 0;
             }
         }
+
+        let _ = progress_step(pair_counter, pair_count as uint, "Protdists");
+        pair_counter += 1;
 
         let seqi = sequence_get_seq_as_string(&aln.seqs[seq_indexi as usize]);
         let seqj = sequence_get_seq_as_string(&aln.seqs[seq_indexj as usize]);
@@ -80,8 +84,10 @@ where
         _ => die(&format!("Invalid -linkage {s_link}")),
     }
     let mut log = format!("UPGMA5({s_link})\n");
+    let _ = progress_log(&log);
     let tree = run_upgma(&mut u, s_link);
     tree_to_file_l13(&tree, output_file_name);
     log.push_str("All done.\n");
+    let _ = progress_log("All done.\n");
     (u, tree, log)
 }
