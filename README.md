@@ -1,10 +1,8 @@
 # muscle-rs
 
-*This crate is called muscle on crate.io due to a clumpsy initial upload. Unfortunately crate.io does not allow old creates to be completely removed. To avoid polluting the namespace further,
-the crate name has been kept, and this author has learned to check 5 times before upload (and then one more time). Apologizes for any confusion!*
-
 A Rust implementation of [MUSCLE](https://drive5.com/muscle5) (MUltiple Sequence Comparison by Log-Expectation), a widely-used multiple sequence alignment tool for biological sequences.
 
+* 2026-08-15: CI added
 * 2026-05-24: Careful testing on real data now possible. But beware, there is global state that should be removed in future versions!
 
 ## This is an LLM-mediated faithful (hopefully) translation, not the original code! 
@@ -137,6 +135,8 @@ The tests also exercise real upstream fixtures in `muscle/test_data`.
 
 ## Benchmarks
 
+Original benchmark baseline: vendored upstream MUSCLE commit `a9a2b744ab7c` (`v5.3-11-ga9a2b74-dirty`).
+
 These are single-run local measurements using `/usr/bin/time -v` wall seconds
 and maximum resident set size. They are translation sanity checks, not stable
 published benchmarks. The C++ binary is `muscle/src/muscle`; the Rust binary is
@@ -222,10 +222,17 @@ translation property, not a guarantee that the chosen order is canonical.
 
 ## Citing
 
-Edgar RC., Muscle5: High-accuracy alignment ensembles enable unbiased assessments of sequence homology and phylogeny. Nature Communications 13.1 (2022): 6968.
-https://www.nature.com/articles/s41467-022-34630-w.pdf
+>Edgar RC., Muscle5: High-accuracy alignment ensembles enable unbiased assessments of sequence homology and phylogeny. Nature Communications 13.1 (2022): 6968.
+>https://www.nature.com/articles/s41467-022-34630-w.pdf
 
-Edgar RC. and Tolstoy I., Muscle-3D: scalable multiple protein structure alignment (2024) BioRxiv.
+>Edgar RC. and Tolstoy I., Muscle-3D: scalable multiple protein structure alignment (2024) BioRxiv.
+
+If you use our translation, we recommend that you also cite the precise version you use. If you link to [crates.io](http://crates.io), you can cite the version number;
+but if you link to our Git repository, for reproducibility, it is better that you provide the URL to the repository and the git hash (Github lists it high up on the page as 7 letters, under the Code button, e.g. '21751cd')
+
+In addition, we appreciate if you cite the paper below describing the translation approach. If for some reason you struggle with journal citation limits, please prioritizing citing the original software over our translation paper.
+
+> Johan Henriksson. Static analysis-guided agentic AI translation enables Rust as a full stack bioinformatics language. arXiv:2608.13029, 2026. https://doi.org/10.48550/arXiv.2608.13029
 
 ## License
 
