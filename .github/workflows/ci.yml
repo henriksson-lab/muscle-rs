@@ -33,4 +33,4 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Check
-        run: cargo check --workspace --all-targets --all-features --locked
+        run: cargo check --workspace --all-targets --all-features
