@@ -2,7 +2,7 @@
 
 A Rust implementation of [MUSCLE](https://drive5.com/muscle5) (MUltiple Sequence Comparison by Log-Expectation), a widely-used multiple sequence alignment tool for biological sequences.
 
-* 2026-08-15: CI added
+* 2026-08-15: CI added, bug fixed
 * 2026-05-24: Careful testing on real data now possible. But beware, there is global state that should be removed in future versions!
 
 ## This is an LLM-mediated faithful (hopefully) translation, not the original code! 

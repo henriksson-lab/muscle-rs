@@ -5306,28 +5306,120 @@ fn clap_command_fields_are_counted_and_dispatched_exhaustively() {
 
 #[test]
 fn translated_myopts_cover_original_command_table() {
-    let cmds_h = include_str!("../muscle/src/cmds.h");
-    let mut cpp_commands = std::collections::BTreeSet::<String>::new();
-    for line in cmds_h.lines() {
-        let line = line.trim();
-        if let Some(rest) = line.strip_prefix("C(") {
-            if let Some((name, _)) = rest.split_once(')') {
-                cpp_commands.insert(name.to_string());
-            }
-        }
-    }
-
     let translated_str_opts = STR_OPT_NAMES
         .iter()
         .copied()
         .collect::<std::collections::BTreeSet<_>>();
-    let missing = cpp_commands
+    let missing = CPP_COMMANDS
         .iter()
-        .filter(|name| !translated_str_opts.contains(name.as_str()))
-        .cloned()
+        .copied()
+        .filter(|name| !translated_str_opts.contains(name))
         .collect::<Vec<_>>();
-    assert_eq!(missing, Vec::<String>::new());
+    assert_eq!(missing, Vec::<&str>::new());
 }
+
+const CPP_COMMANDS: &[&str] = &[
+    "align",
+    "upgma5",
+    "msastats",
+    "pprog",
+    "pprog2",
+    "pprogt",
+    "strip_gappy",
+    "strip_gappy_cols",
+    "strip_gappy_rows",
+    "guide_tree_join_order",
+    "eadistmx",
+    "eadistmx_msas",
+    "tree_subset_nodes",
+    "consseq",
+    "super4",
+    "usorter",
+    "permute_tree",
+    "divide_tree",
+    "qscore",
+    "qscore_oldcode",
+    "qscore2",
+    "qscoredir",
+    "eacluster",
+    "derep",
+    "uclust",
+    "super5",
+    "super6",
+    "transaln",
+    "hmmdump",
+    "perturbhmm",
+    "resample",
+    "disperse",
+    "efastats",
+    "fa2efa",
+    "colscore_efa",
+    "qscore_efa",
+    "efa_bestconf",
+    "efa_bestcols",
+    "trimtoref",
+    "trimtoref_efa",
+    "efa_explode",
+    "relabel",
+    "addconfseq",
+    "labels2randomchaintree",
+    "maxcc",
+    "letterconf",
+    "letterconf_html",
+    "make_a2m",
+    "make_a2m_refseq",
+    "eesort",
+    "strip_anchors",
+    "profalign",
+    "profseq",
+    "protdists",
+    "uclustpd",
+    "uclustpd2",
+    "searchpd",
+    "build_guide_tree",
+    "test_malloc",
+    "upgma5_msa",
+    "pprog_tree",
+    "test",
+    "build_prof3",
+    "profprof3",
+    "muscle3",
+    "make_substmx",
+    "bench",
+    "bench_blosums",
+    "sweep",
+    "spatter",
+    "msaselfscore3",
+    "batch",
+    "m3ensemble",
+    "m3select",
+    "m3refine",
+    "addletterconfseq",
+    "cmp_msa",
+    "cmp_ref_msas",
+    "squeeze_inserts",
+    "newbench_selectpfams",
+    "newbench_pfamgroups",
+    "mustang_core",
+    "test_mega",
+    "shrub",
+    "super7",
+    "swdistmx",
+    "transalnref",
+    "mega_msas",
+    "masm_train",
+    "sw",
+    "swmasm",
+    "swmasm_seq",
+    "masm_stats",
+    "mega2",
+    "test_sw_aa",
+    "test_sw_mm",
+    "swtest",
+    "swtestmm",
+    "swsimple2",
+    "core_blocks",
+];
 
 #[test]
 fn alpha_helpers_match_cpp_classification() {
